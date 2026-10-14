@@ -1,9 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 
-/* ------------------------------------------------------------------ */
-/*  Feasible — board-exam study feasibility checker                     */
-/*  Not a planner. It tells you whether your plan was ever possible.    */
-/* ------------------------------------------------------------------ */
+
 
 const C = {
   bg: "#0B0E13",
