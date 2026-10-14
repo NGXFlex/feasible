@@ -1,22 +1,9 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
+import { C, FONT, Tap, inputStyle } from "./ui.jsx";
+import Login from "./Login.jsx";
 
 
-
-const C = {
-  bg: "#0B0E13",
-  card: "#141920",
-  cardHi: "#1B222C",
-  line: "#232C38",
-  text: "#EEF1F6",
-  dim: "#7B8798",
-  amber: "#F2A93B",
-  red: "#FF6B6B",
-  green: "#43D6A0",
-  blue: "#5B8DEF",
-};
-
-const FONT =
-  '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif';
+/* ------------------------------------------------------------------ */
 
 const TYPE_META = {
   theory: { label: "Theory", base: 2.0, phases: [0.5, 0.2, 0.3] },
@@ -82,20 +69,18 @@ function hoursBetween(from, to, wd, we, ov) {
    of crashing, so the same build runs before and after Firebase setup.
 ------------------------------------------------------------------ */
 let memoryStore = null;
-let cloud = null;          // the firebase module once it loads
-let cloudTried = false;
+let cloudPromise = null;   // resolves to the firebase module, or null
 let saveTimer = null;
 
-async function getCloud() {
-  if (cloudTried) return cloud;
-  cloudTried = true;
-  try {
-    const mod = await import("./firebase.js");
-    if (mod?.cloudLoad && mod?.cloudSave) cloud = mod;
-  } catch (e) {
-    cloud = null;          // not installed / not configured — local only
+/* The promise is cached (not a flag), so two callers that arrive while the
+   import is still loading both wait for the same result. */
+function getCloud() {
+  if (!cloudPromise) {
+    cloudPromise = import("./firebase.js")
+      .then((mod) => (mod?.cloudLoad && mod?.cloudSave ? mod : null))
+      .catch(() => null);  // not installed / not configured — local only
   }
-  return cloud;
+  return cloudPromise;
 }
 
 function localGet() {
@@ -172,6 +157,25 @@ function saveState(obj, onStatus) {
   }, 900);
 }
 
+/* Used when the account changes. Whatever was queued for the old account
+   must never be written into the new one, and a signed-out device must not
+   keep the previous account's plan lying around. */
+function cancelPendingSave() { clearTimeout(saveTimer); }
+
+/* "Continue without an account" is remembered on this device, so the login
+   screen comes first until someone signs in or chooses that once. */
+const GUEST_KEY = "feasible-guest-v1";
+function isGuest() {
+  try { return localStorage.getItem(GUEST_KEY) === "1"; } catch (e) { return false; }
+}
+function setGuest(on) {
+  try {
+    if (on) localStorage.setItem(GUEST_KEY, "1");
+    else localStorage.removeItem(GUEST_KEY);
+  } catch (e) {}
+}
+function clearLocalCopy() { localSet(null); }
+
 /* ---------------------------- seed ----------------------------- */
 function sampleSubjects() {
   const t = new Date();
@@ -224,39 +228,11 @@ function useCountUp(target, ms = 700) {
   return v;
 }
 
-function Tap({ children, onClick, style, disabled }) {
-  const [down, setDown] = useState(false);
-  return (
-    <button
-      onClick={disabled ? undefined : onClick}
-      onPointerDown={() => setDown(true)}
-      onPointerUp={() => setDown(false)}
-      onPointerLeave={() => setDown(false)}
-      style={{
-        appearance: "none", border: "none", font: "inherit",
-        cursor: disabled ? "default" : "pointer",
-        transform: down ? "scale(0.965)" : "scale(1)",
-        opacity: disabled ? 0.4 : down ? 0.9 : 1,
-        transition: "transform .18s cubic-bezier(.34,1.56,.64,1), opacity .18s ease",
-        ...style,
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
 const roundBtn = {
   width: 34, height: 34, borderRadius: 11, background: C.cardHi,
   color: C.text, fontSize: 18, fontWeight: 500, lineHeight: 1, flexShrink: 0,
 };
 const smallBtn = { ...roundBtn, width: 30, height: 30, fontSize: 16 };
-
-const inputStyle = {
-  background: C.cardHi, border: `1px solid ${C.line}`, color: C.text,
-  borderRadius: 12, padding: "13px 14px", fontSize: 16, fontFamily: FONT,
-  width: "100%", outline: "none", boxSizing: "border-box",
-};
 
 /* number field you can actually clear while typing */
 function NumField({ value, onChange, min = 0, max = 9999, style, placeholder }) {
@@ -393,31 +369,71 @@ export default function App() {
   const [overlay, setOverlay] = useState(false);
   const [onboarded, setOnboarded] = useState(false);
   const [sync, setSync] = useState("local");
+  const [cloudApi, setCloudApi] = useState(null);   // firebase module, once it loads
+  const [account, setAccount] = useState(null);     // { uid, email, isAnonymous } | null
+  const [paused, setPaused] = useState(false);      // holds autosave while the account switches
+  const [loginFrom, setLoginFrom] = useState("onboard");
+  const [loginFirst, setLoginFirst] = useState(false);  // login is the launch screen, not a detour
+
+  /* put a saved plan into the screen's state */
+  const applyState = (s) => {
+    setWd(typeof s?.wd === "number" ? s.wd : 2.5);
+    setWe(typeof s?.we === "number" ? s.we : 5);
+    setOv(s?.ov ?? {});
+    setPace(s?.pace ?? "steady");
+    setSubjects(Array.isArray(s?.subjects) ? s.subjects : []);
+    setOnboarded(!!s?.onboarded);
+  };
 
   /* restore */
   useEffect(() => {
     let alive = true;
-    loadState().then(({ state: s, source }) => {
+    loadState().then(async ({ state: s, source }) => {
       if (!alive) return;
       setSync(source === "cloud" ? "cloud" : "local");
-      if (s) {
-        if (typeof s.wd === "number") setWd(s.wd);
-        if (typeof s.we === "number") setWe(s.we);
-        if (s.ov) setOv(s.ov);
-        if (s.pace) setPace(s.pace);
-        if (Array.isArray(s.subjects) && s.subjects.length) setSubjects(s.subjects);
-        if (s.onboarded) { setOnboarded(true); setScreen("subjects"); }
+      if (s) applyState(s);
+      const home = s?.onboarded ? "subjects" : "onboard";
+
+      // Login comes first, unless this device is already signed in to an
+      // account, or the person already chose to continue without one.
+      const c = await getCloud();
+      let signedIn = false;
+      if (c?.signInWithEmail) {
+        try {
+          const acct = await c.currentAccount();
+          signedIn = !!(acct && !acct.isAnonymous);
+        } catch (e) { /* can't tell: treat as signed out */ }
+      }
+      if (!alive) return;
+      if (c?.signInWithEmail && !signedIn && !isGuest()) {
+        setLoginFrom(home);
+        setLoginFirst(true);
+        setScreen("login");
+      } else if (home === "subjects") {
+        setScreen("subjects");
       }
       setReady(true);
     });
     return () => { alive = false; };
   }, []);
 
+  /* accounts: only offered when the Firebase module loaded */
+  useEffect(() => {
+    let alive = true;
+    let unwatch;
+    getCloud().then((c) => {
+      if (!alive || !c?.signInWithEmail) return;
+      setCloudApi(c);
+      unwatch = c.watchAccount?.(setAccount);
+    });
+    return () => { alive = false; unwatch?.(); };
+  }, []);
+
   /* autosave */
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || paused) return;
     saveState({ wd, we, ov, pace, subjects, onboarded }, setSync);
-  }, [ready, wd, we, ov, pace, subjects, onboarded]);
+  }, [ready, paused, wd, we, ov, pace, subjects, onboarded]);
 
   const go = (s, d = "fwd") => { setDir(d); setScreen(s); };
 
@@ -425,6 +441,7 @@ export default function App() {
   useEffect(() => {
     const handleBack = (e) => {
       if (sheet) { e?.preventDefault?.(); setSheet(null); return true; }
+      if (screen === "login") { e?.preventDefault?.(); leaveLogin(); return true; }
       if (screen === "detail") { e?.preventDefault?.(); go("subjects", "back"); return true; }
       if (screen !== "subjects" && screen !== "onboard") {
         e?.preventDefault?.(); go("subjects", "back"); return true;
@@ -437,8 +454,81 @@ export default function App() {
       document.removeEventListener("backbutton", handleBack);
       window.removeEventListener("popstate", handleBack);
     };
-  }, [sheet, screen]);
+  }, [sheet, screen, loginFrom, loginFirst]);
   const flash = (m) => { setToast(m); setTimeout(() => setToast(null), 2200); };
+
+  /* ---- accounts ----
+     Signing in switches this device to a different Firebase user, so the
+     plan on screen has to be swapped for that account's plan. Autosave is
+     held (paused) from just before the switch until the new plan is loaded,
+     so nothing from the old user is ever written into the new account. */
+  const openLogin = (from) => { setLoginFrom(from); setLoginFirst(false); go("login"); };
+
+  /* "Not now" / "Continue without an account" / hardware back */
+  const leaveLogin = () => {
+    setGuest(true);                    // remembered, so login isn't forced on every launch
+    setLoginFirst(false);
+    go(loginFrom, loginFirst ? "fwd" : "back");
+  };
+
+  const authApi = cloudApi && {
+    signIn: async (email, password) => {
+      cancelPendingSave();
+      setPaused(true);
+      try { return await cloudApi.signInWithEmail(email, password); }
+      catch (e) { setPaused(false); throw e; }
+    },
+    register: (email, password) => cloudApi.registerWithEmail(email, password),
+    resetPassword: (email) => cloudApi.sendReset(email),
+  };
+
+  const finishLogin = async (user, kind) => {
+    if (kind === "register") {
+      // the email was attached to the same user, so the saved plan is already theirs
+      setAccount(user);
+      flash("Account created");
+      setLoginFirst(false);
+      go(loginFrom, loginFirst ? "fwd" : "back");
+      return;
+    }
+    let remote;
+    try {
+      remote = await cloudApi.cloudLoad();
+    } catch (e) {
+      // couldn't read their plan: undo the sign-in rather than risk overwriting it
+      try { await cloudApi.signOutAccount(); } catch (_) {}
+      setPaused(false);
+      const err = new Error("load failed");
+      err.code = "app/load-failed";
+      throw err;
+    }
+    setAccount(user);
+    if (remote) applyState(remote);
+    setSync("cloud");
+    setPaused(false);
+    flash("Signed in");
+    setLoginFirst(false);
+    // land on Subjects if the plan they now have has any set-up in it
+    const plan = remote ?? { onboarded, subjects };
+    go(plan.onboarded || plan.subjects?.length ? "subjects" : "onboard");
+  };
+
+  const signOutNow = async () => {
+    cancelPendingSave();
+    setPaused(true);
+    try { await cloudApi.signOutAccount(); }
+    catch (e) { setPaused(false); flash("Couldn't sign out. Try again."); return; }
+    clearLocalCopy();
+    applyState(null);
+    setAccount(null);
+    setSync("local");
+    setPaused(false);
+    setGuest(false);                   // signed out: login comes first again
+    setLoginFrom("onboard");
+    setLoginFirst(true);
+    go("login", "back");
+    flash("Signed out");
+  };
 
   const analysis = useMemo(() => {
     const sorted = [...subjects].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -601,6 +691,7 @@ export default function App() {
     @keyframes barUp { from { opacity:0; transform: translateY(70px) } to { opacity:1; transform:none } }
     @keyframes barUpCentered { from { opacity:0; transform: translate(-50%, 70px) } to { opacity:1; transform: translate(-50%, 0) } }
     .rise { animation: rise .5s cubic-bezier(.22,1,.36,1) both }
+    .focus-ring:focus-visible { outline: 2px solid ${C.amber}; outline-offset: 3px }
     ::-webkit-scrollbar { width:0; height:0 }
     .appmin { min-height: 100vh; min-height: 100dvh }
     .sheetbox { max-height: 88vh; max-height: 85dvh }
@@ -644,7 +735,17 @@ export default function App() {
       >
         {screen === "onboard" && (
           <Onboard wd={wd} we={we} setWd={setWd} setWe={setWe}
-            onDone={() => { go("subjects"); flash("Saved"); }} />
+            onDone={() => { setOnboarded(true); go("subjects"); flash("Saved"); }}
+            onSignIn={cloudApi ? () => openLogin("onboard") : null} />
+        )}
+        {screen === "login" && (
+          <Login
+            api={authApi}
+            hasPlan={subjects.length > 0}
+            firstRun={loginFirst}
+            onDone={finishLogin}
+            onClose={leaveLogin}
+          />
         )}
         {screen === "subjects" && (
           <Subjects sync={sync} data={analysis} onOpen={(id) => { setOpenId(id); go("detail"); }}
@@ -662,6 +763,9 @@ export default function App() {
         {screen === "time" && (
           <TimeScreen
             wd={wd} we={we} ov={ov} pace={pace} lastExam={lastExam}
+            account={cloudApi ? account : undefined}
+            onSignIn={() => openLogin("time")}
+            onSignOut={signOutNow}
             onSaveWd={(v) => { setWd(v); flash("Changes confirmed"); }}
             onSaveWe={(v) => { setWe(v); flash("Changes confirmed"); }}
             onSavePace={(v) => { setPace(v); flash("Changes confirmed"); }}
@@ -829,7 +933,7 @@ function PaceCard({ value, onCommit }) {
 }
 
 /* ---------------------------- ONBOARD ---------------------------- */
-function Onboard({ wd, we, setWd, setWe, onDone }) {
+function Onboard({ wd, we, setWd, setWe, onDone, onSignIn }) {
   return (
     <div style={{ padding: "72px 24px 0" }}>
       <div className="rise" style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>Feasible</div>
@@ -849,6 +953,14 @@ function Onboard({ wd, we, setWd, setWe, onDone }) {
       <div style={{ fontSize: 13, color: C.dim, textAlign: "center", marginTop: 14 }}>
         Everything is kept. You can change it later under Time.
       </div>
+      {onSignIn && (
+        <div className="rise" style={{ fontSize: 14, color: C.dim, textAlign: "center", marginTop: 22, animationDelay: ".3s" }}>
+          Already have an account?{" "}
+          <Tap className="focus-ring" onClick={onSignIn} style={{ background: "none", color: C.amber, fontSize: 14, fontWeight: 600, padding: "4px 2px", borderRadius: 6 }}>
+            Sign in
+          </Tap>
+        </div>
+      )}
     </div>
   );
 }
@@ -870,9 +982,11 @@ function Stepper({ label, sub, value, set, delay }) {
 }
 
 /* ----------------------------- TIME ------------------------------ */
-function TimeScreen({ wd, we, ov, pace, lastExam, onSaveWd, onSaveWe, onSavePace, onSetDay, onResetDay, onReset, setOverlay }) {
+function TimeScreen({ wd, we, ov, pace, lastExam, account, onSignIn, onSignOut, onSaveWd, onSaveWe, onSavePace, onSetDay, onResetDay, onReset, setOverlay }) {
   const [pick, setPick] = useState(null);
   const [reset, setReset] = useState(false);
+  const [outArm, setOutArm] = useState(false);
+  const signedIn = !!(account && !account.isAnonymous && account.email);
   useEffect(() => { setOverlay(!!pick); return () => setOverlay(false); }, [pick]);
   const total = Math.max(14, daysUntil(lastExam) + 1);
   const days = Array.from({ length: total }, (_, i) => addDays(new Date(), i));
@@ -940,6 +1054,40 @@ function TimeScreen({ wd, we, ov, pace, lastExam, onSaveWd, onSaveWe, onSavePace
           );
         })}
       </div>
+
+      {account !== undefined && (
+        <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginTop: 28 }}>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>Account</div>
+          <div style={{ fontSize: 13, color: C.dim, marginTop: 3, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+            {signedIn
+              ? <>Signed in as <span style={{ color: C.text }}>{account.email}</span>. Your plan syncs to every device you sign in on.</>
+              : "Your plan is tied to this device. Make an account to keep it if you switch phones or clear your browser."}
+          </div>
+          {signedIn ? (
+            <Tap
+              className="focus-ring"
+              onClick={() => (outArm ? onSignOut() : setOutArm(true))}
+              onPointerLeave={() => setOutArm(false)}
+              style={{
+                marginTop: 14, width: "100%",
+                background: outArm ? C.amber : C.cardHi, color: outArm ? "#181203" : C.text,
+                border: `1px solid ${outArm ? C.amber : C.line}`, padding: "13px 0", borderRadius: 14,
+                fontSize: 14.5, fontWeight: 600, transition: "background .25s ease, color .25s ease",
+              }}
+            >
+              {outArm ? "Tap again to sign out" : "Sign out"}
+            </Tap>
+          ) : (
+            <Tap
+              className="focus-ring"
+              onClick={onSignIn}
+              style={{ marginTop: 14, width: "100%", background: C.cardHi, color: C.text, border: `1px solid ${C.line}`, padding: "13px 0", borderRadius: 14, fontSize: 14.5, fontWeight: 600 }}
+            >
+              Sign in or create account
+            </Tap>
+          )}
+        </div>
+      )}
 
       <div style={{ marginTop: 30, paddingTop: 20, borderTop: `1px solid ${C.line}` }}>
         <Tap
