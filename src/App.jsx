@@ -7,6 +7,7 @@ import {
 import Login from "./Login.jsx";
 import { SYLLABI, getSyllabus, readinessFactor, dailyNeed, planForTarget, exerciseMinutes, MODEL } from "./engine/syllabusEngine.js";
 import { parsePortions, WEIGHTS, DEFAULT_WEIGHT } from "./engine/portions.js";
+import { MAX_PDF_BYTES, MAX_REQUEST_BYTES } from "./engine/pdfPortions.js";
 import {
   TYPE_META, PACE, paceMult, DIFF_MULT, diffMult, toDate, addDays, key, daysUntil,
   defaultHours, hoursBetween, analysePlan,
@@ -567,6 +568,8 @@ export default function App() {
     @keyframes barUp { from { opacity:0; transform: translateY(70px) } to { opacity:1; transform:none } }
     @keyframes barUpCentered { from { opacity:0; transform: translate(-50%, 70px) } to { opacity:1; transform: translate(-50%, 0) } }
     .rise { animation: rise .5s cubic-bezier(.32,.72,0,1) both }
+    @keyframes pdfspin { to { transform: rotate(360deg) } }
+    .pdf-spin { display: inline-block; animation: pdfspin .8s linear infinite }
     .focus-ring:focus-visible { outline: 2px solid ${C.accent}; outline-offset: 3px }
     ::-webkit-scrollbar { width:0; height:0 }
     .appmin { min-height: 100vh; min-height: 100dvh }
@@ -2103,7 +2106,45 @@ const toStored = (o) => Object.fromEntries(SUBJECT_KEYS.filter((k) => o[k] !== u
 
 const fmtMarks = (m) => (Math.round(m * 2) / 2).toString();
 const PASTE = "paste";          // "Chapters from" option: a pasted portions list
+const UPLOAD = "upload";        // "Chapters from" option: a PDF read by Gemini, then reviewed as a pasted list
 const MAX_CHAPTERS = 60;
+/* Read a PDF in the browser and ask the server (api/parse-portions.js) for the
+   chapters Gemini finds. Resolves to { subject: [chapters] }; rejects with an
+   Error whose message can be shown as it is. */
+async function readPdfPortions(file) {
+  if (!file) throw new Error("No file was chosen.");
+  if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
+    throw new Error("That isn't a PDF. Choose a .pdf file, or use Paste portions instead.");
+  }
+  if (file.size > MAX_PDF_BYTES) {
+    throw new Error("That PDF is over 5 MB. Try a smaller file, or use Paste portions instead.");
+  }
+  const base64 = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).replace(/^data:[^;]+;base64,/, ""));
+    r.onerror = () => reject(new Error("That file couldn't be opened. Try again, or use Paste portions instead."));
+    r.readAsDataURL(file);
+  });
+  const body = JSON.stringify({ pdf: base64 });
+  if (body.length > MAX_REQUEST_BYTES) {
+    throw new Error("That PDF is too big to send (the limit is about 3 MB). Try a smaller file, or use Paste portions instead.");
+  }
+  let res;
+  try {
+    res = await fetch("/api/parse-portions", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+  } catch {
+    throw new Error("Couldn't reach the PDF reader. Check your connection, or use Paste portions instead.");
+  }
+  let data = null;
+  try { data = await res.json(); } catch { /* not JSON: no function here, or the host refused it */ }
+  if (!res.ok || !data || typeof data !== "object" || Array.isArray(data)) {
+    if (data?.error) throw new Error(data.error);
+    if (res.status === 413) throw new Error("That PDF is too big to send (the limit is about 3 MB). Try a smaller file, or use Paste portions instead.");
+    throw new Error("PDF import isn't available here. Use Paste portions instead.");
+  }
+  return data;
+}
+
 const PORTIONS_EXAMPLE = "UNIT I: PHYSICAL CHEMISTRY\n1. Solutions\n2. Electrochemistry\nCh 3 - Chemical Kinetics\n• d and f Block Elements";
 const newSubjectId = (name) => name.toLowerCase().replace(/\s+/g, "") + Date.now();
 
@@ -2118,16 +2159,41 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const lbl = { fontSize: 13, color: C.dim, marginBottom: 8, display: "block" };
 
-  /* source: your own chapters, a pasted portions list, or a syllabus from the engine */
+  /* source: your own chapters, a pasted portions list, a PDF, or a syllabus from the engine */
   const [srcId, setSrcId] = useState(initial?.syllabus ?? null);
   const pasting = srcId === PASTE;
-  const syl = srcId && !pasting ? getSyllabus(srcId) : null;
+  const uploading = srcId === UPLOAD;
+  const syl = srcId && !pasting && !uploading ? getSyllabus(srcId) : null;
+
+  /* PDF import: Gemini reads the file; the student picks a subject, and its
+     chapters land in the paste list to be checked before anything is saved */
+  const [pdf, setPdf] = useState({ status: "idle" });   // idle | reading | done | error
+  const [fromPdf, setFromPdf] = useState(false);       // the paste list came from a PDF
+  const [dragging, setDragging] = useState(false);
+  const uploadPdf = async (file) => {
+    if (!file) return;
+    setPdf({ status: "reading", fileName: file.name });
+    try {
+      const subjects = await readPdfPortions(file);
+      if (!Object.keys(subjects).length) throw new Error("No subjects or chapters were found in that PDF. Use Paste portions instead.");
+      setPdf({ status: "done", fileName: file.name, subjects });
+    } catch (err) {
+      setPdf({ status: "error", fileName: file.name, error: err.message });
+    }
+  };
+  const pickPdfSubject = (subject, chapters) => {
+    setPasteText(chapters.join("\n"));
+    setPasteWeight({});
+    setFromPdf(true);
+    setSrcId(PASTE);
+    setF((p) => ({ ...p, name: p.name.trim() ? p.name : subject }));
+  };
 
   /* pasted portions: parsed live; × deletes that line from the text itself,
      so the text and the list never disagree */
   const [pasteText, setPasteText] = useState("");
   const [pasteWeight, setPasteWeight] = useState({});   // chapter name (lower case) -> weight
-  const parsedAll = pasting ? parsePortions(pasteText) : [];
+  const parsedAll = pasting ? parsePortions(pasteText, { keepHeadings: fromPdf }) : [];
   const parsed = parsedAll.slice(0, MAX_CHAPTERS);
   const weightOf = (name) => pasteWeight[name.toLowerCase()] ?? DEFAULT_WEIGHT;
   const removeLine = (line) =>
@@ -2138,7 +2204,8 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
   });
   const chooseSource = (id) => {
     setSrcId(id);
-    if (!id || id === PASTE) return;
+    setFromPdf(false);
+    if (!id || id === PASTE || id === UPLOAD) return;
     const s = getSyllabus(id);
     setPicked(new Set(s.chapters.map((c) => c.id)));   // start with everything; untick what's done
     setF((p) => ({ ...p, name: p.name.trim() ? p.name : s.subject, type: "problem" }));
@@ -2152,7 +2219,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
   const chosenHours = chosen.reduce((t, c) => t + c.hours.total, 0) * factor.factor * pm;
   const chosenMarks = chosen.reduce((t, c) => t + c.marksEst, 0);
 
-  const valid = f.name.trim().length > 0 && (!syl || chosen.length > 0) && (!pasting || parsed.length > 0);
+  const valid = f.name.trim().length > 0 && !uploading && (!syl || chosen.length > 0) && (!pasting || parsed.length > 0);
 
   const submitSyllabus = () => {
     const prevRefs = initial?.refs ?? [];
@@ -2236,12 +2303,15 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
         {mode !== "edit" && (
           <>
             <label style={lbl}>Chapters from</label>
-            <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 18 }}>
               <Tap className="focus-ring" aria-pressed={!srcId} onClick={() => chooseSource(null)} style={pill(!srcId)}>
                 Your own
               </Tap>
               <Tap className="focus-ring" aria-pressed={pasting} onClick={() => chooseSource(PASTE)} style={pill(pasting)}>
                 Paste portions
+              </Tap>
+              <Tap className="focus-ring" aria-pressed={uploading} onClick={() => chooseSource(UPLOAD)} style={pill(uploading)}>
+                Upload PDF
               </Tap>
               {SYLLABI.map((s) => (
                 <Tap key={s.id} className="focus-ring" aria-pressed={srcId === s.id} onClick={() => chooseSource(s.id)} style={pill(srcId === s.id)}>
@@ -2306,11 +2376,91 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
               combines how many questions a chapter has with how hard its ideas are.
             </div>
           </>
+        ) : uploading ? (
+          <div style={{ marginBottom: 18 }}>
+            <label
+              htmlFor="portions-pdf"
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => { e.preventDefault(); setDragging(false); uploadPdf(e.dataTransfer.files?.[0]); }}
+              style={{
+                display: "block", position: "relative", textAlign: "center", cursor: "pointer",
+                border: `1.5px dashed ${dragging ? C.accent : C.lineHi}`, borderRadius: 16,
+                background: dragging ? C.accentSoft : C.raised, padding: "26px 16px",
+                transition: `background .2s ${EASE}, border-color .2s ${EASE}`,
+              }}
+            >
+              <input
+                id="portions-pdf"
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={(e) => { uploadPdf(e.target.files?.[0]); e.target.value = ""; }}
+                style={{ position: "absolute", width: 1, height: 1, opacity: 0, overflow: "hidden" }}
+              />
+              <div style={{ fontSize: 15, fontWeight: 600 }}>{pdf.fileName && pdf.status !== "idle" ? pdf.fileName : "Choose your portions PDF"}</div>
+              <div style={{ fontSize: 12.5, color: C.dim, marginTop: 4 }}>
+                {pdf.status === "idle" ? "Drop it here, or tap to pick one · up to 5 MB" : "Tap to choose a different file"}
+              </div>
+            </label>
+
+            <div aria-live="polite">
+              {pdf.status === "reading" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, fontSize: 14, color: C.dim }}>
+                  <span className="pdf-spin" aria-hidden="true" style={{ width: 16, height: 16, borderRadius: 99, border: `2px solid ${C.line}`, borderTopColor: C.accent }} />
+                  Reading your portions…
+                </div>
+              )}
+
+              {pdf.status === "error" && (
+                <div role="alert" style={{ ...notice, marginTop: 14, fontSize: 14, lineHeight: 1.5 }}>
+                  {pdf.error}
+                  <Tap
+                    className="focus-ring"
+                    onClick={() => chooseSource(PASTE)}
+                    style={{ display: "block", width: "100%", marginTop: 12, background: C.surface, color: C.text, border: `1px solid ${C.line}`, padding: "11px 0", borderRadius: 12, fontSize: 14, fontWeight: 600 }}
+                  >
+                    Use Paste portions instead
+                  </Tap>
+                </div>
+              )}
+
+              {pdf.status === "done" && (
+                <div style={{ marginTop: 16 }}>
+                  <span style={lbl}>Subjects found — pick the one you're adding</span>
+                  {Object.entries(pdf.subjects).map(([subject, chapters]) => (
+                    <Tap
+                      key={subject}
+                      className="focus-ring card"
+                      onClick={() => pickPdfSubject(subject, chapters)}
+                      style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: "13px 14px", marginBottom: 8, color: C.text }}
+                    >
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: "block", fontSize: 15, fontWeight: 600, overflowWrap: "anywhere" }}>{subject}</span>
+                        <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 2 }}>
+                          {chapters.length} chapter{chapters.length === 1 ? "" : "s"}
+                        </span>
+                      </span>
+                      <span aria-hidden="true" style={{ color: C.dim, fontSize: 18 }}>›</span>
+                    </Tap>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         ) : (
           <>
             {pasting ? (
               <>
-                <label style={lbl} htmlFor="portions">Paste your portions list</label>
+                {fromPdf && pdf.status === "done" && (
+                  <Tap
+                    className="focus-ring"
+                    onClick={() => setSrcId(UPLOAD)}
+                    style={{ background: "none", color: C.accentText, fontSize: 13, fontWeight: 600, padding: "2px 0", marginBottom: 10, borderRadius: 6 }}
+                  >
+                    ‹ Other subjects in {pdf.fileName}
+                  </Tap>
+                )}
+                <label style={lbl} htmlFor="portions">{fromPdf ? "Chapters read from your PDF" : "Paste your portions list"}</label>
                 <textarea
                   id="portions"
                   rows={7}
@@ -2358,6 +2508,11 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
                       </li>
                     ))}
                   </ol>
+                )}
+                {fromPdf && parsed.length > 0 && (
+                  <div role="note" style={{ ...notice, marginTop: -8, marginBottom: 18, fontSize: 13, lineHeight: 1.5 }}>
+                    Checked by you — AI can misread a PDF, so delete anything wrong before saving.
+                  </div>
                 )}
               </>
             ) : (

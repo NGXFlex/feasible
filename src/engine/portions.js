@@ -17,16 +17,22 @@ function isHeading(text) {
   return text.length < 25 && /[A-Z]/.test(text) && text === text.toUpperCase();
 }
 
+/* A chapter name without its numbering or bullet, or trailing separators
+   ("Coordination Compounds;" isn't part of the name) */
+export const cleanChapterName = (text) =>
+  String(text ?? "").trim().replace(LEAD, "").replace(/[\s;,:.]+$/, "").trim();
+
 /* [{ name, line }] in order; `line` is the index of the source line, so a
-   chapter can be removed from the pasted text itself. */
-export function parsePortions(text) {
+   chapter can be removed from the pasted text itself.
+   keepHeadings: the lines are already chapter names (from a PDF), so an
+   all-caps one like "OPTICS" is a chapter, not a heading. */
+export function parsePortions(text, { keepHeadings = false } = {}) {
   const out = [];
   String(text ?? "").split(/\r?\n/).forEach((raw, line) => {
     const trimmed = raw.trim();
-    if (!trimmed || HEADING_WORD.test(trimmed)) return;
-    // trailing separators ("Coordination Compounds;") aren't part of the name
-    const name = trimmed.replace(LEAD, "").replace(/[\s;,:.]+$/, "").trim();
-    if (!name || isHeading(name)) return;
+    if (!trimmed || (!keepHeadings && HEADING_WORD.test(trimmed))) return;
+    const name = cleanChapterName(trimmed);
+    if (!name || (!keepHeadings && isHeading(name))) return;
     out.push({ name, line });
   });
   return out;

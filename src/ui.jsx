@@ -51,6 +51,7 @@ export function Tap({ children, onClick, style, disabled, ...rest }) {
     <button
       type="button"
       {...rest}
+      aria-disabled={disabled || undefined}
       onClick={disabled ? undefined : onClick}
       onPointerDown={() => setDown(true)}
       onPointerUp={() => setDown(false)}
