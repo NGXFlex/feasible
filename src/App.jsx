@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { C, FONT, Tap, inputStyle } from "./ui.jsx";
 import Login from "./Login.jsx";
-import { SYLLABI, getSyllabus, readinessFactor, dailyNeed } from "./engine/syllabusEngine.js";
+import { SYLLABI, getSyllabus, readinessFactor, dailyNeed, planForTarget, exerciseMinutes, MODEL } from "./engine/syllabusEngine.js";
 
 
 /* ------------------------------------------------------------------ */
@@ -581,7 +581,7 @@ export default function App() {
         outstanding.push({ i, d, cost, name: s.names?.[i] || `Chapter ${i + 1}` });
       }
       return {
-        s, meta, diffs, doneCount, remaining, baseChapter, raw, factor, costs, syl,
+        s, meta, diffs, doneCount, remaining, baseChapter, raw, factor, costs, syl, pm,
         marks: syl ? marks : null, marksLeft: syl ? marksLeft : null,
         need: Math.max(0, raw - s.logged), outstanding,
       };
@@ -692,7 +692,7 @@ export default function App() {
         gap: available - b.need,
         totalSpare: spare,
         expected, behind: expected - b.doneCount,
-        factor: b.factor, costs: b.costs, syl: b.syl, marks: b.marks, marksLeft: b.marksLeft,
+        factor: b.factor, costs: b.costs, syl: b.syl, marks: b.marks, marksLeft: b.marksLeft, pm: b.pm,
         studyDays, perDay, havePerDay,
         overconfident: b.factor.overconfident,
       };
@@ -1455,15 +1455,32 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
   const [draftDiff, setDraftDiff] = useState([]);
   const [draftCount, setDraftCount] = useState(0);
   const [confirm, setConfirm] = useState(false);
+  const [orderFor, setOrderFor] = useState(null);   // chapter index whose exercise order is open
 
   useEffect(() => {
     if (s) { setDraftNames(s.names ?? []); setDraftDiff(s.diffs ?? []); setDraftCount(s.chapters); }
   }, [s?.id, s?.chapters]);
 
-  useEffect(() => { setOverlay(editing); return () => setOverlay(false); }, [editing]);
+  useEffect(() => { setOverlay(editing || orderFor != null); return () => setOverlay(false); }, [editing, orderFor]);
 
   if (!s) return null;
   const pct = (s.doneCount / s.chapters) * 100;
+
+  /* Fastest way to the target score. Chapters left off this subject when it
+     was added count as covered (the picker asks for what's still to do). */
+  const target = s.target ?? 75;
+  const plan = s.syl
+    ? planForTarget(
+        s.syl.chapters.map((c) => {
+          const i = s.refs?.indexOf(c.id) ?? -1;
+          return { id: c.id, marks: c.marksEst, hours: i >= 0 ? s.costs[i] : 0, needs: c.needs, secured: i < 0 || !!s.done[i] };
+        }),
+        (s.syl.totalMarks * target) / 100,
+      )
+    : null;
+  const leftOut = s.syl ? s.syl.chapters.filter((c) => !(s.refs ?? []).includes(c.id)).length : 0;
+  const planPerDay = plan ? dailyNeed(plan.hours - (s.logged ?? 0), s.studyDays) : null;
+  const orderCh = orderFor != null ? s.syl?.byId[s.refs?.[orderFor]] : null;
 
   const resize = (n) => {
     n = Math.max(1, Math.min(60, n));
@@ -1545,10 +1562,21 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
             {s.marksLeft < s.marks - 0.01 && <>, and <b style={{ fontWeight: 650, color: C.amber }}>{fmtMarks(s.marksLeft)}</b> of that is still to do</>}.
           </div>
           <div style={{ fontSize: 12, color: C.dim, marginTop: 10, lineHeight: 1.5 }}>
-            Unit marks are official. CBSE doesn't set marks per chapter, so each chapter's share is estimated
-            from its unit. Question counts are every numbered NCERT exercise question.
+            Unit marks are official. CBSE doesn't set marks per chapter, so each chapter's share comes from
+            CBSE's 2025-26 and 2026-27 sample papers. Question counts are every numbered NCERT exercise question.
           </div>
         </div>
+      )}
+
+      {plan && (
+        <PlanCard
+          s={s}
+          plan={plan}
+          target={target}
+          perDay={planPerDay}
+          leftOut={leftOut}
+          onTarget={(v) => onPatch(s.id, { target: v })}
+        />
       )}
 
       <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
@@ -1606,35 +1634,62 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
               })}
             </div>
           </div>
-        ) : (
-          <Tap
-            key={i}
-            onClick={() => onToggle(s.id, i)}
-            style={{ width: "100%", textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "14px 16px", marginBottom: 8, display: "flex", alignItems: "center", gap: 13, color: C.text }}
-          >
-            <div style={{ width: 22, height: 22, borderRadius: 99, border: `1.5px solid ${s.done[i] ? C.green : C.line}`, background: s.done[i] ? C.green : "transparent", color: "#08120E", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", transition: "all .25s cubic-bezier(.34,1.56,.64,1)", flexShrink: 0 }}>
-              {s.done[i] ? "✓" : ""}
-            </div>
-            <span style={{ flex: 1, minWidth: 0 }}>
-              <span style={{ display: "block", fontSize: 15, color: s.done[i] ? C.dim : C.text, textDecoration: s.done[i] ? "line-through" : "none" }}>
-                {nm || `Chapter ${i + 1}`}
-              </span>
-              {s.syl?.byId[s.refs?.[i]] && (() => {
-                const ch = s.syl.byId[s.refs[i]];
-                return (
-                  <span style={{ display: "block", fontSize: 12, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
-                    Ch {ch.no} · {ch.questions} questions · ~{fmtMarks(ch.marksEst)} marks
+        ) : (() => {
+          const ch = s.syl?.byId[s.refs?.[i]];
+          return (
+            <div key={i} style={{ position: "relative", marginBottom: 8 }}>
+              <Tap
+                onClick={() => onToggle(s.id, i)}
+                style={{ width: "100%", textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: ch ? "14px 16px 18px" : "14px 16px", display: "flex", alignItems: ch ? "flex-start" : "center", gap: 13, color: C.text }}
+              >
+                <div style={{ width: 22, height: 22, borderRadius: 99, border: `1.5px solid ${s.done[i] ? C.green : C.line}`, background: s.done[i] ? C.green : "transparent", color: "#08120E", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", transition: "all .25s cubic-bezier(.34,1.56,.64,1)", flexShrink: 0 }}>
+                  {s.done[i] ? "✓" : ""}
+                </div>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 15, color: s.done[i] ? C.dim : C.text, textDecoration: s.done[i] ? "line-through" : "none" }}>
+                    {nm || `Chapter ${i + 1}`}
                   </span>
-                );
-              })()}
-            </span>
-            {!s.done[i] && (
-              <span style={{ fontSize: 12, color: diffMeta(s.diffs?.[i] ?? 2).color, fontWeight: 600, flexShrink: 0 }}>
-                {diffMeta(s.diffs?.[i] ?? 2).label} · {(s.costs?.[i] ?? s.baseChapter * diffMult(s.diffs?.[i] ?? 2)).toFixed(1)}h
-              </span>
-            )}
-          </Tap>
-        )
+                  {ch && (
+                    <span style={{ display: "block", fontSize: 12, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
+                      Ch {ch.no} · {ch.questions} questions · ~{fmtMarks(ch.marksEst)} marks
+                    </span>
+                  )}
+                </span>
+                {/* the right column keeps its width even when done, so the order button never covers text */}
+                <span style={{ flexShrink: 0, minWidth: ch ? 74 : 0, textAlign: "right" }}>
+                  {!s.done[i] && (
+                    <span style={{ fontSize: 12, color: diffMeta(s.diffs?.[i] ?? 2).color, fontWeight: 600 }}>
+                      {diffMeta(s.diffs?.[i] ?? 2).label} · {(s.costs?.[i] ?? s.baseChapter * diffMult(s.diffs?.[i] ?? 2)).toFixed(1)}h
+                    </span>
+                  )}
+                </span>
+              </Tap>
+              {ch && (
+                <Tap
+                  className="focus-ring"
+                  aria-label={`Exercise order for ${ch.name}`}
+                  title="Which exercise to do first"
+                  onClick={() => setOrderFor(i)}
+                  style={{ position: "absolute", right: 10, bottom: 9, width: 28, height: 28, borderRadius: 9, background: C.cardHi, border: `1px solid ${C.line}`, color: C.dim, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}
+                >
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                    <path d="M10 6h10M10 12h10M10 18h10" />
+                    <path d="M4 6h1M4 12h1M4 18h1" strokeWidth="2.6" />
+                  </svg>
+                </Tap>
+              )}
+            </div>
+          );
+        })()
+      )}
+
+      {orderCh && (
+        <ExerciseSheet
+          ch={orderCh}
+          scale={s.costs[orderFor] / orderCh.hours.total}
+          multiplier={s.factor.factor}
+          onClose={() => setOrderFor(null)}
+        />
       )}
 
       {!editing && (
@@ -1659,11 +1714,197 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
   );
 }
 
+/* ---------------------------- FASTEST PLAN ---------------------------- */
+function PlanCard({ s, plan, target, perDay, leftOut, onTarget }) {
+  const total = s.syl.totalMarks;
+  const goal = (total * target) / 100;
+  const at = (id) => s.refs?.indexOf(id) ?? -1;
+  const hoursOf = (id) => (at(id) >= 0 ? s.costs[at(id)] : 0);
+  const marksOf = (id) => s.syl.byId[id].marksEst;
+  const saved = plan.skipped.reduce((t, id) => t + hoursOf(id), 0);
+  const skippedMarks = plan.skipped.reduce((t, id) => t + marksOf(id), 0);
+  const accuracy = Math.round(plan.secureRate * 100);
+  const expectPct = Math.round((plan.expectedMarks / total) * 100);
+
+  return (
+    <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 16, animationDelay: ".15s" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>Fastest way to {target}%</div>
+          <div style={{ fontSize: 13, color: C.dim, marginTop: 3 }}>{fmtMarks(goal)} of {total} marks</div>
+        </div>
+        <div role="group" aria-label="Target score" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Tap className="focus-ring" aria-label="Lower the target" disabled={target <= 50} onClick={() => onTarget(target - 5)} style={smallBtn}>−</Tap>
+          <div aria-live="polite" style={{ fontSize: 16, fontWeight: 700, width: 42, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{target}%</div>
+          <Tap className="focus-ring" aria-label="Raise the target" disabled={target >= 95} onClick={() => onTarget(target + 5)} style={smallBtn}>+</Tap>
+        </div>
+      </div>
+
+      {plan.order.length === 0 ? (
+        <div style={{ fontSize: 14, marginTop: 14, lineHeight: 1.5 }}>
+          What you've covered is already enough for {target}%. Keep it fresh with revision.
+        </div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <div style={{ flex: 1, background: C.cardHi, borderRadius: 14, padding: "12px 14px" }}>
+              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: C.amber, fontVariantNumeric: "tabular-nums" }}>{Math.round(plan.hours)}h</div>
+              <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>
+                {plan.skipped.length ? `instead of ${Math.round(plan.hours + saved)}h` : "every chapter left"}
+              </div>
+            </div>
+            <div style={{ flex: 1, background: C.cardHi, borderRadius: 14, padding: "12px 14px" }}>
+              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: perDay != null && perDay > s.havePerDay ? C.red : C.text, fontVariantNumeric: "tabular-nums" }}>
+                {perDay != null ? `${perDay.toFixed(1)}h` : "—"}
+              </div>
+              <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>a day until {fmtDate(s.date)}</div>
+            </div>
+          </div>
+
+          <div style={{ fontSize: 12.5, color: C.dim, margin: "16px 0 4px" }}>Study in this order</div>
+          <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
+            {plan.order.map((id, k) => (
+              <li key={id} style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "8px 0", borderTop: k ? `1px solid ${C.line}` : "none" }}>
+                <span style={{ width: 18, flexShrink: 0, color: C.dim, fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>{k + 1}</span>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 14, lineHeight: 1.4 }}>
+                  {s.syl.byId[id].name}
+                  {plan.extras.includes(id) && <span style={{ display: "block", color: C.green, fontSize: 12, marginTop: 2 }}>Cheap extra marks: added as safety margin</span>}
+                </span>
+                <span style={{ flexShrink: 0, fontSize: 12.5, color: C.dim, fontVariantNumeric: "tabular-nums" }}>
+                  ~{fmtMarks(marksOf(id))} · {hoursOf(id).toFixed(1)}h
+                </span>
+              </li>
+            ))}
+          </ol>
+
+          {plan.skipped.length > 0 && (
+            <div style={{ marginTop: 10, background: C.cardHi, borderRadius: 12, padding: "12px 14px", fontSize: 13.5, lineHeight: 1.5 }}>
+              <b style={{ fontWeight: 650 }}>Leave for later:</b>{" "}
+              {plan.skipped.map((id) => s.syl.byId[id].name).join(", ")}. That saves {Math.round(saved)}h for about {fmtMarks(skippedMarks)} marks.
+            </div>
+          )}
+        </>
+      )}
+
+      {plan.feasible ? (
+        <div style={{ fontSize: 12, color: C.dim, marginTop: 12, lineHeight: 1.5 }}>
+          Covers about {fmtMarks(plan.coveredMarks)} of {total} marks
+          {leftOut > 0 && <>, counting the {leftOut} chapter{leftOut === 1 ? "" : "s"} you left off this subject as done</>}.
+          Getting about {accuracy}% of what you prepare right, that's ~{Math.round(plan.expectedMarks)} ({expectPct}%).
+          Chapter marks come from CBSE's last two sample papers, so treat this as a guide.
+        </div>
+      ) : (
+        <div role="status" style={{ marginTop: 12, background: "#1C1710", border: "1px solid #3A2E17", borderRadius: 12, padding: "12px 14px", fontSize: 13.5, lineHeight: 1.5, color: "#E9D3A6" }}>
+          Even every chapter gets you about {Math.round(plan.expectedMarks)} ({expectPct}%) at {accuracy}% accuracy.
+          {" "}{target}% needs better accuracy, not more chapters: more practice questions and full sample papers.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* --------------------------- EXERCISE ORDER --------------------------- */
+function ExerciseSheet({ ch, scale, multiplier, onClose }) {
+  const box = useRef(null);
+  const close = useRef(onClose);
+  useEffect(() => { close.current = onClose; });   // always the latest, without re-running the setup below
+  useEffect(() => {
+    box.current?.focus();   // once, on open — screen readers start at the dialog
+    const onKey = (e) => { if (e.key === "Escape") close.current(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
+
+  const items = ch.exerciseOrder;
+  const firstLater = items.findIndex((e) => e.priority === 1);
+  const groundworkFor = (e) =>
+    items.filter((d) => d.ex !== "Misc" && d.builds.includes(e.ex) && d.priority === e.priority).map((d) => d.ex);
+  const tag = (text, color) => (
+    <span style={{ display: "inline-block", fontSize: 11.5, fontWeight: 600, color, background: "rgba(255,255,255,.05)", border: `1px solid ${C.line}`, borderRadius: 99, padding: "2px 8px", marginRight: 6, marginTop: 6 }}>
+      {text}
+    </span>
+  );
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 86, display: "flex", alignItems: "flex-end", justifyContent: "center", animation: "fadeIn .25s ease both" }}
+      onClick={onClose}
+    >
+      <div
+        ref={box}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="exercise-order-title"
+        className="sheetbox"
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: C.bg, borderTop: `1px solid ${C.line}`, borderRadius: "26px 26px 0 0", width: "100%", maxWidth: 430, padding: "10px 24px 28px", overflowY: "auto", outline: "none", animation: "sheetUp .42s cubic-bezier(.32,.72,0,1) both", boxSizing: "border-box" }}
+      >
+        <div style={{ width: 38, height: 4, background: C.line, borderRadius: 99, margin: "0 auto 20px" }} />
+        <div style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>Ch {ch.no} · {ch.name}</div>
+        <h2 id="exercise-order-title" style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.6, margin: "8px 0 6px" }}>
+          Which exercise first
+        </h2>
+        <div style={{ fontSize: 14, color: C.dim, lineHeight: 1.5, marginBottom: 18 }}>
+          Groundwork first, then the question types CBSE asks most. The Miscellaneous Exercise mixes
+          everything, so it goes last.
+        </div>
+
+        <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
+          {items.map((e, k) => {
+            const later = firstLater >= 0 && k >= firstLater;
+            const feeds = groundworkFor(e);
+            return (
+              <li key={e.ex}>
+                {k === firstLater && k > 0 && (
+                  <div style={{ fontSize: 12.5, color: C.dim, margin: "16px 0 8px", paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
+                    Short on time? These can wait.
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 12, background: C.card, border: `1px solid ${k === 0 ? "rgba(242,169,59,.55)" : C.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 8, opacity: later ? 0.78 : 1 }}>
+                  <div aria-hidden="true" style={{ width: 24, height: 24, borderRadius: 99, flexShrink: 0, background: k === 0 ? C.amber : C.cardHi, color: k === 0 ? "#181203" : C.dim, fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", fontVariantNumeric: "tabular-nums" }}>
+                    {k + 1}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14.5, fontWeight: 600, lineHeight: 1.35 }}>
+                      {e.ex === "Misc" ? "Miscellaneous Exercise" : `Exercise ${e.ex}`}
+                      <span style={{ color: C.dim, fontWeight: 500 }}> · {e.topic}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: C.dim, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>
+                      {e.q} question{e.q === 1 ? "" : "s"} · ~{(exerciseMinutes(ch, e, scale) / 60).toFixed(1)}h practice
+                    </div>
+                    <div>
+                      {k === 0 && tag("Start here", C.amber)}
+                      {e.scope && tag("Not in CBSE 2026-27 syllabus", C.red)}
+                      {e.ex !== "Misc" && e.yield === 3 && tag("High yield", C.green)}
+                      {e.ex !== "Misc" && e.yield < e.priority && feeds.length > 0 && tag(`Groundwork for ${feeds.join(", ")}`, C.blue)}
+                      {e.ex !== "Misc" && e.priority === 1 && !e.scope && tag("Lower yield", C.dim)}
+                      {e.ex === "Misc" && tag("Mixed revision", C.dim)}
+                    </div>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+
+        <div style={{ fontSize: 12, color: C.dim, lineHeight: 1.5, margin: "10px 0 18px" }}>
+          High yield: this exercise's question type carried {MODEL.highYieldMarks}+ marks a paper on average in
+          CBSE's 2025-26 and 2026-27 sample papers. Times are practice only, at your ×{multiplier.toFixed(2)} multiplier.
+        </div>
+        <Tap className="focus-ring" onClick={onClose} style={{ width: "100%", background: "transparent", border: `1px solid ${C.line}`, color: C.text, padding: "15px 0", borderRadius: 16, fontSize: 15, fontWeight: 600 }}>
+          Got it
+        </Tap>
+      </div>
+    </div>
+  );
+}
+
 /* --------------------------- SUBJECT SHEET --------------------------- */
 /* What a subject stores. Everything else on an analysed subject is computed. */
 const SUBJECT_KEYS = [
   "id", "name", "date", "createdAt", "chapters", "type", "confidence", "lastScore",
-  "pace", "logged", "names", "diff", "done", "syllabus", "refs",
+  "pace", "logged", "names", "diff", "done", "syllabus", "refs", "target",
 ];
 const toStored = (o) => Object.fromEntries(SUBJECT_KEYS.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
 
@@ -1836,8 +2077,8 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
             </div>
             <div style={{ fontSize: 12, color: C.dim, marginBottom: 18, lineHeight: 1.5 }}>
               Questions are every numbered NCERT exercise question (2026-27 reprint). CBSE gives marks per
-              unit only, so chapter marks are an estimate. Difficulty combines how many questions a chapter
-              has with how hard its ideas are.
+              unit only, so chapter marks are estimated from its 2025-26 and 2026-27 sample papers. Difficulty
+              combines how many questions a chapter has with how hard its ideas are.
             </div>
           </>
         ) : (

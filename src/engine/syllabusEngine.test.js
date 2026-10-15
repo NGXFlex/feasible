@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { NCERT12_MATHS } from "../syllabus/ncert12Maths.js";
 import {
   analyseSyllabus, getSyllabus, questionCount, readinessFactor, dailyNeed, tierFor, MODEL,
+  paperEvidence, planForTarget, exerciseKey,
 } from "./syllabusEngine.js";
 
 const syl = analyseSyllabus(NCERT12_MATHS);
@@ -123,4 +124,163 @@ test("daily need: hours over study days, or null when no study days are left", (
   assert.equal(dailyNeed(30, 10), 3);
   assert.equal(dailyNeed(-5, 10), 0);
   assert.equal(dailyNeed(30, 0), null);
+});
+
+/* ------------------------- sample papers ------------------------- */
+
+test("each CBSE sample paper has 38 questions worth 80 marks, in the published sections", () => {
+  const sections = [[1, 20, 1], [21, 25, 2], [26, 31, 3], [32, 35, 5], [36, 38, 4]];
+  for (const p of NCERT12_MATHS.papers) {
+    assert.equal(p.questions.length, 38, p.id);
+    assert.equal(p.questions.reduce((t, q) => t + q[1], 0), 80, p.id);
+    for (const [from, to, marks] of sections) {
+      for (const q of p.questions.filter(([n]) => +n >= from && +n <= to)) {
+        assert.equal(q[1], marks, `${p.id} Q${q[0]}`);
+      }
+    }
+  }
+});
+
+test("every exercise a paper question is tagged with exists in the book", () => {
+  const keys = new Set(NCERT12_MATHS.chapters.flatMap((c) => c.exercises.map((e) => exerciseKey(c.no, e.ex))));
+  for (const p of NCERT12_MATHS.papers) {
+    for (const [n, , ...alts] of p.questions) {
+      assert.ok(alts.length >= 1, `${p.id} Q${n} has no tag`);
+      for (const k of alts.flatMap((a) => a.split("+"))) assert.ok(keys.has(k), `${p.id} Q${n}: ${k}`);
+    }
+  }
+});
+
+test("each paper's marks per unit match the official CBSE unit marks", () => {
+  const unitOfNo = Object.fromEntries(NCERT12_MATHS.chapters.map((c) => [c.no, c.unit]));
+  for (const p of paperEvidence(NCERT12_MATHS).papers) {
+    const perUnit = {};
+    for (const [no, m] of Object.entries(p.byChapter)) perUnit[unitOfNo[no]] = (perUnit[unitOfNo[no]] ?? 0) + m;
+    for (const u of NCERT12_MATHS.units) assert.ok(near(perUnit[u.id] ?? 0, u.marks), `${p.id} ${u.name}: ${perUnit[u.id]}`);
+  }
+});
+
+test("chapter marks are the sample-paper average", () => {
+  const expected = { 1: 4.5, 2: 3.5, 3: 3.25, 4: 6.75, 5: 8.5, 6: 8, 7: 9.25, 8: 3.75, 9: 5.5, 10: 6, 11: 8, 12: 5, 13: 8 };
+  for (const c of syl.chapters) {
+    assert.ok(near(c.marksEst, expected[c.no]), `chapter ${c.no}: ${c.marksEst}`);
+    assert.equal(c.marksSource, "papers");
+  }
+});
+
+test("without sample papers, chapter marks fall back to splitting each unit", () => {
+  const bare = analyseSyllabus({ ...NCERT12_MATHS, papers: [] });
+  for (const u of NCERT12_MATHS.units) {
+    const sum = bare.chapters.filter((c) => c.unit === u.id).reduce((t, c) => t + c.marksEst, 0);
+    assert.ok(near(sum, u.marks));
+  }
+  assert.equal(bare.chapters[0].marksSource, "unit split");
+});
+
+/* ------------------------- exercise order ------------------------- */
+
+test("exercise lists: builds point to exercises in the same chapter, never themselves", () => {
+  for (const c of syl.chapters) {
+    const labels = new Set(c.exercises.map((e) => e.ex));
+    for (const e of c.exercises) {
+      for (const b of e.builds) {
+        assert.ok(labels.has(b), `${c.name} ${e.ex} builds on unknown ${b}`);
+        assert.notEqual(b, e.ex);
+      }
+    }
+  }
+});
+
+test("exercise order: every exercise once, never before what it builds on, Miscellaneous last", () => {
+  for (const c of syl.chapters) {
+    const order = c.exerciseOrder.map((e) => e.ex);
+    assert.equal(order.length, c.exercises.length, c.name);
+    assert.equal(new Set(order).size, order.length, c.name);
+    order.forEach((ex, i) => {
+      for (const b of c.exercises.find((e) => e.ex === ex).builds) {
+        assert.ok(order.indexOf(b) < i, `${c.name}: ${ex} comes before ${b}`);
+      }
+    });
+    if (order.includes("Misc")) assert.equal(order.at(-1), "Misc", c.name);
+  }
+});
+
+test("exercise order: high-yield groundwork comes before low-yield side topics", () => {
+  const order = (no) => syl.chapters.find((c) => c.no === no).exerciseOrder.map((e) => e.ex);
+  // Determinants: area of a triangle (never in either paper) waits until the inverse/systems path is done
+  assert.deepEqual(order(4), ["4.1", "4.3", "4.4", "4.5", "4.2", "Misc"]);
+  // Integrals: definite-integral properties (a 5-mark question in both papers) right after its groundwork
+  assert.deepEqual(order(7).slice(0, 4), ["7.1", "7.2", "7.8", "7.10"]);
+});
+
+/* -------------------------- 75% planner -------------------------- */
+
+const f112 = readinessFactor(3, 60).factor;
+const planInput = (securedNos = []) =>
+  syl.chapters.map((c) => ({ id: c.id, marks: c.marksEst, hours: c.hours.total * f112, needs: c.needs, secured: securedNos.includes(c.no) }));
+
+/* independent brute force: the fewest hours that reach the cover, prerequisites respected */
+function bruteMinHours(input, targetMarks, rate = MODEL.secureRate) {
+  const byId = Object.fromEntries(input.map((c) => [c.id, c]));
+  const cands = input.filter((c) => !c.secured);
+  const secured = input.filter((c) => c.secured).reduce((t, c) => t + c.marks, 0);
+  let best = Infinity;
+  for (let mask = 0; mask < 1 << cands.length; mask++) {
+    const chosen = cands.filter((_, i) => mask & (1 << i));
+    const ids = new Set(chosen.map((c) => c.id));
+    const okNeeds = chosen.every((c) => c.needs.every((n) => byId[n].secured || ids.has(n)));
+    const marks = secured + chosen.reduce((t, c) => t + c.marks, 0);
+    if (okNeeds && marks * rate + 1e-9 >= targetMarks) best = Math.min(best, chosen.reduce((t, c) => t + c.hours, 0));
+  }
+  return best;
+}
+
+test("75% plan reaches the target with margin, respects prerequisites, and is the true minimum before extras", () => {
+  const input = planInput();
+  const plan = planForTarget(input, 60);
+  assert.equal(plan.feasible, true);
+  assert.ok(plan.expectedMarks >= 60 - 1e-9);
+  const byId = Object.fromEntries(input.map((c) => [c.id, c]));
+  const extraHours = plan.extras.reduce((t, id) => t + byId[id].hours, 0);
+  assert.ok(near(plan.hours - extraHours, bruteMinHours(input, 60), 1e-6));
+  // prerequisites: every chosen chapter's needs come earlier in the study order
+  plan.order.forEach((id, i) => {
+    for (const n of byId[id].needs) assert.ok(plan.order.indexOf(n) > -1 && plan.order.indexOf(n) < i, `${id} needs ${n}`);
+  });
+  // for this syllabus the cheapest way to 75% leaves out Differential Equations
+  assert.deepEqual(plan.skipped, ["m12-09"]);
+});
+
+test("planner: extras are only chapters cheaper per mark than the plan without them", () => {
+  const input = planInput();
+  const byId = Object.fromEntries(input.map((c) => [c.id, c]));
+  for (const pct of [50, 60, 70, 75, 80]) {
+    const plan = planForTarget(input, 80 * pct / 100);
+    const extraHours = plan.extras.reduce((t, id) => t + byId[id].hours, 0);
+    const extraMarks = plan.extras.reduce((t, id) => t + byId[id].marks, 0);
+    const baseRate = (plan.coveredMarks - extraMarks - plan.securedMarks) / (plan.hours - extraHours);
+    for (const id of plan.extras) assert.ok(byId[id].marks / byId[id].hours > baseRate, `${pct}%: ${id}`);
+  }
+});
+
+test("planner: done chapters count as secured and cost nothing", () => {
+  const fresh = planForTarget(planInput(), 60);
+  const withDone = planForTarget(planInput([7, 12, 13]), 60);
+  assert.ok(withDone.hours < fresh.hours);
+  assert.ok(!withDone.order.includes("m12-07"));
+  assert.ok(near(withDone.securedMarks, 9.25 + 5 + 8));
+});
+
+test("planner: an unreachable target says so and plans everything", () => {
+  const plan = planForTarget(planInput(), 80 * 0.9);   // 90% needs more than 85% of the whole paper
+  assert.equal(plan.feasible, false);
+  assert.equal(plan.skipped.length, 0);
+  assert.ok(near(plan.coveredMarks, 80));
+});
+
+test("planner: nothing to do when the target is already covered", () => {
+  const plan = planForTarget(planInput([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]), 60);
+  assert.equal(plan.feasible, true);
+  assert.equal(plan.order.length, 0);
+  assert.equal(plan.hours, 0);
 });
