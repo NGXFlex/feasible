@@ -160,7 +160,7 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
 
   /* ---- 3. per-subject results ---- */
   const results = base.map((b, i) => {
-    const { days, allocated, available } = sim.subjects[i];
+    const { days, allocated, available, recovered, spare: spareShare } = sim.subjects[i];
     // the subject's window is every study day from today to its exam,
     // whether or not it still needs any of them
     const studyDays = studyDaysBetween(today, b.s.date, wd, we, ov);
@@ -185,7 +185,8 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
       ...b.s, meta: b.meta, diffs: b.diffs, doneCount: b.doneCount,
       remaining: b.remaining, baseChapter: b.baseChapter,
       perChapter: b.remaining ? b.raw / b.remaining : b.baseChapter,
-      raw: b.raw, needed: b.need, allocated, available, days,
+      raw: b.raw, needed: b.need, allocated, available, days, recovered, spareShare,
+      windowHours: hoursBetween(today, b.s.date, wd, we, ov),
       windowStart, windowEnd, windowDays: studyDays, phases, priority,
       // a phase with no days only matters while there's work left
       squeezed: b.need > 0 ? phases.filter((x) => x.days === 0).length : 0,
@@ -214,6 +215,38 @@ export function urgencyOf(s) {
 }
 export const rankByUrgency = (subjects) =>
   [...subjects].sort((a, b) => urgencyOf(b) - urgencyOf(a) || startOfDay(a.date) - startOfDay(b.date));
+
+/* ------------------------------ the verdict ------------------------------
+   One subject, in words: short (it can't be finished at this pace), tight
+   (it fits with less than 3h, or a fifth of its work, to spare) or
+   comfortable. A subject with nothing left to do is always comfortable. */
+export function verdictOf(s) {
+  if (s.gap < -0.5) return { kind: "short", hours: -s.gap };
+  if (s.needed > 1e-6 && s.gap < Math.max(3, 0.2 * s.needed)) return { kind: "tight", hours: Math.max(0, s.gap) };
+  return { kind: "fits", hours: Math.max(0, s.gap) };
+}
+
+/* most short first, comfortable last; the nearer exam first when level */
+export const riskOrder = (subjects) =>
+  [...subjects].sort((a, b) => a.gap - b.gap || startOfDay(a.date) - startOfDay(b.date));
+
+/* When the plan is short: which subject breaks first (the earliest exam
+   that's short) and the one change most likely to fix it.
+     hours   an extra hour a day or less closes the gap before its exam
+     target  more than that, and it has marks per chapter: lower the target
+     cut     otherwise: drop this many chapters (at its average cost)
+   null when nothing is short. */
+export function shortfallAction(subjects) {
+  const short = subjects.filter((s) => s.gap < -0.5).sort((a, b) => startOfDay(a.date) - startOfDay(b.date));
+  if (!short.length) return null;
+  const s = short[0];
+  const deficit = -s.gap;
+  const perDay = s.studyDays ? deficit / s.studyDays : Infinity;
+  if (perDay <= 1) return { kind: "hours", subject: s, perDay };
+  if (s.syl || s.chapterMarks) return { kind: "target", subject: s };
+  const chapters = Math.min(s.remaining, Math.max(1, Math.ceil(deficit / (s.perChapter || 1))));
+  return { kind: "cut", subject: s, chapters };
+}
 
 /* --------------------------------- today ---------------------------------
    Today's hours from the day-by-day simulation. The day is planned as it

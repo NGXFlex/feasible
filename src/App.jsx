@@ -13,6 +13,7 @@ import { parsePortions, WEIGHTS, DEFAULT_WEIGHT } from "./engine/portions.js";
 import {
   TYPE_META, PACE, paceMult, DIFF_MULT, diffMult, toDate, addDays, key, daysUntil,
   defaultHours, hoursBetween, analysePlan, todayPlan, rankByUrgency, urgencyOf,
+  verdictOf, riskOrder, shortfallAction,
 } from "./engine/plan.js";
 import { migrateLog, setLoggedTotal, addLog } from "./engine/log.js";
 import { fmtH } from "./engine/format.js";
@@ -681,7 +682,9 @@ export default function App() {
           />
         )}
         {screen === "reality" && (
-          <Reality data={analysis} passed={passed} passedActions={passedActions} worst={worst} totalShort={totalShort} totalSpare={totalSpare} {...emptyActions}
+          <Reality data={analysis} passed={passed} passedActions={passedActions} totalShort={totalShort} totalSpare={totalSpare} todayHours={day.capacity} {...emptyActions}
+            onOpen={(id) => { setOpenId(id); go("detail"); }}
+            onTime={() => openFrom("time", "reality")}
             onSetLog={(id, v) => {
               setSubjects((p) => p.map((x) => (x.id === id ? setLoggedTotal(x, v, key(new Date())) : x)));
               flash("Changes confirmed");
@@ -691,7 +694,7 @@ export default function App() {
         {screen === "time" && (
           <TimeScreen
             wd={wd} we={we} ov={ov} lastExam={lastExam}
-            onBack={subBack} backLabel={back === "today" ? "Today" : "Settings"}
+            onBack={subBack} backLabel={back === "today" ? "Today" : back === "reality" ? "Reality check" : "Settings"}
             onSaveWd={(v) => { setWd(v); flash("Changes confirmed"); }}
             onSaveWe={(v) => { setWe(v); flash("Changes confirmed"); }}
             onSetDay={(k, v, d) => { setOv((p) => ({ ...p, [k]: v })); flash("Changes confirmed"); }}
@@ -1358,7 +1361,7 @@ function Subjects({ data, passed, passedActions, onOpen, onAdd, onImport, onSamp
             onClick={onImport}
             style={{ width: "100%", marginTop: 10, background: C.surface, border: `1px solid ${C.line}`, color: C.text, padding: "14px 0", borderRadius: 14, fontSize: 14.5, fontWeight: 600 }}
           >
-            Import from your portions PDF
+            Import portions
           </Tap>
           <Tap
             onClick={onSample}
@@ -1414,7 +1417,7 @@ function Subjects({ data, passed, passedActions, onOpen, onAdd, onImport, onSamp
               Add a subject
             </Tap>
             <Tap onClick={onImport} style={{ flex: 1, background: "transparent", border: `1px dashed ${C.lineHi}`, color: C.dim, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 500 }}>
-              Import from PDF
+              Import portions
             </Tap>
           </div>
           <div style={{ fontSize: 13, color: C.dim, textAlign: "center", marginTop: 12 }}>
@@ -1439,7 +1442,7 @@ function EmptyState({ title, text, onAdd, onImport }) {
       )}
       {onImport && (
         <Tap onClick={onImport} style={{ width: "100%", marginTop: 10, background: C.surface, border: `1px solid ${C.line}`, color: C.text, padding: "13px 0", borderRadius: 14, fontSize: 14.5, fontWeight: 600 }}>
-          Import from your portions PDF
+          Import portions
         </Tap>
       )}
     </div>
@@ -1569,13 +1572,89 @@ function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, 
 }
 
 /* ---------------------------- REALITY ---------------------------- */
-function Reality({ data, passed, passedActions, worst, totalShort, totalSpare, onSetLog, onAdd, onImport }) {
-  const short = Math.round(-totalShort);
-  const spare = Math.round(totalSpare);
-  const n = useCountUp(short > 0 ? short : spare);
+/* A subject's verdict in words: what the eye should land on */
+const VERDICT_COLOR = { short: C.shortfall, tight: C.accentText, fits: C.fits };
+function verdictText(s, v) {
+  if (v.kind === "short") return `Short by ${fmtH(v.hours)} — you can't finish this at your current pace`;
+  if (v.kind === "tight") return `Tight — only ${fmtH(v.hours)} spare`;
+  if (s.needed <= 1e-6) return `Comfortable — nothing left to study, ${fmtH(v.hours)} spare`;
+  return `Comfortable — ${fmtH(v.hours)} spare after you finish this subject`;
+}
+
+/* The arithmetic behind one subject's two bars, with its own numbers */
+function HowWorkedOut({ s, todayHours }) {
+  const [open, setOpen] = useState(false);
+  const f = s.factor.factor;
+  const base = s.remaining ? s.raw / (f * s.pm) : 0;
+  const each = s.remaining ? base / s.remaining : 0;
+  const pace = PACE.find((p) => Math.abs(p.mult - s.pm) < 1e-9)?.label ?? "Steady";
+  const todayShare = s.days?.[0] && key(s.days[0].d) === key(new Date()) ? s.days[0].h : 0;
+  const row = (label, value, opts = {}) => (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, padding: "5px 0", fontWeight: opts.bold ? 650 : 400, color: opts.bold ? C.text : undefined, borderTop: opts.bold ? `1px solid ${C.line}` : "none", marginTop: opts.bold ? 4 : 0, paddingTop: opts.bold ? 8 : 5 }}>
+      <span style={{ minWidth: 0 }}>{label}</span>
+      {value != null && <span style={{ flexShrink: 0, fontVariantNumeric: "tabular-nums", color: C.text }}>{value}</span>}
+    </div>
+  );
+  const note = (text) => <div style={{ fontSize: 12, color: C.dim, lineHeight: 1.5, margin: "0 0 4px" }}>{text}</div>;
+  const head = (text) => <div style={{ fontSize: 11, fontWeight: 650, letterSpacing: ".08em", textTransform: "uppercase", color: C.dim, margin: "14px 0 4px" }}>{text}</div>;
+
+  return (
+    <div style={{ borderTop: `1px solid ${C.line}`, marginTop: 14 }}>
+      <Tap
+        className="focus-ring"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+        style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", background: "transparent", color: C.text, padding: "12px 0 2px", fontSize: 14, fontWeight: 600, textAlign: "left" }}
+      >
+        How is this worked out?
+        <span aria-hidden="true" style={{ color: C.dim, fontSize: 18, transform: open ? "rotate(90deg)" : "none", transition: `transform .25s ${EASE}` }}>›</span>
+      </Tap>
+      {open && (
+        <div className="rise" style={{ fontSize: 13.5, color: C.dim, lineHeight: 1.45, paddingBottom: 4 }}>
+          {head("Hours this subject needs")}
+          {s.remaining === 0 ? row("Every chapter is done", fmtH(0), { bold: true }) : (
+            <>
+              {row(`${s.remaining} chapter${s.remaining === 1 ? "" : "s"} left × about ${fmtH(each)} each`, fmtH(base))}
+              {note(s.syl
+                ? "Each chapter starts from its own estimate, from its NCERT questions and examples, adjusted for the difficulty you set."
+                : `A ${s.meta.label.toLowerCase()} chapter is ${fmtH(s.meta.base)} at medium difficulty; harder ones count for more, easier ones for less.`)}
+              {row(`× ${f.toFixed(2)} for how ready you are`)}
+              {note(s.factor.overconfident
+                ? `Your last score of ${s.lastScore}% decides this on its own (×${s.factor.fromScore.toFixed(2)}), because it disagrees with a confidence of ${s.confidence}/5.`
+                : `Confidence ${s.confidence}/5 gives ×${s.factor.fromConfidence.toFixed(2)} and your last score of ${s.lastScore}% gives ×${s.factor.fromScore.toFixed(2)}; the score counts for 60%.`)}
+              {row(`× ${s.pm.toFixed(2)} for your pace (${pace})`)}
+              {row("= work in this subject", fmtH(s.raw))}
+              {s.logged > 0 && row("− hours you've already logged", `−${fmtH(s.logged)}`)}
+              {row("Hours this subject needs", fmtH(s.needed), { bold: true })}
+            </>
+          )}
+
+          {head("Hours you'll have before this exam")}
+          {note(`${s.studyDays} study day${s.studyDays === 1 ? "" : "s"} from today to the exam on ${fmtDate(s.date)}, holding ${fmtH(s.windowHours)} in all.`)}
+          {note("Every day's hours are shared between the subjects whose exams are still ahead, each in proportion to what it still needs per day. A nearer exam, or more work, pulls harder.")}
+          {row(`Scheduled for this subject${todayShare > 1e-6 ? ` (today: ${fmtH(todayShare)} of ${fmtH(todayHours)})` : ""}`, fmtH(s.allocated))}
+          {s.recovered > 0.05 && row("+ hours its days have left that it can still use", `+${fmtH(s.recovered)}`)}
+          {s.spareShare > 0.05 && row("+ its share of hours no subject needed", `+${fmtH(s.spareShare)}`)}
+          {row("Hours you'll have before this exam", fmtH(s.available), { bold: true })}
+
+          {head("So")}
+          {row(`${fmtH(s.available)} − ${fmtH(s.needed)}`, `${s.gap >= 0 ? "+" : "−"}${fmtH(Math.abs(s.gap))}`)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Reality({ data, passed, passedActions, totalShort, totalSpare, todayHours, onSetLog, onAdd, onImport, onOpen, onTime }) {
+  const short = -totalShort;
+  const isShort = short > 0.5;
   const [go, setGo] = useState(false);
   useEffect(() => { const t = setTimeout(() => setGo(true), 120); return () => clearTimeout(t); }, []);
   const flagged = data.filter((s) => s.overconfident);
+  const ranked = riskOrder(data);
+  const action = isShort ? shortfallAction(data) : null;
+  const first = action?.subject;
+  const actionBtn = { marginTop: 14, background: C.surface, border: `1px solid ${C.line}`, color: C.text, padding: "12px 18px", borderRadius: 12, fontSize: 14, fontWeight: 600 };
 
   return (
     <div style={{ padding: "60px 24px 0" }}>
@@ -1589,44 +1668,62 @@ function Reality({ data, passed, passedActions, worst, totalShort, totalSpare, o
         />
       )}
 
-      {data.length > 0 && <div className="rise card" style={{ ...hero(short > 0 ? "shortfall" : "fits"), marginBottom: SP.section }}>
-        <div style={{ fontSize: 64, fontWeight: 700, letterSpacing: -3, lineHeight: 1, color: short > 0 ? C.shortfall : C.fits }}>
-          {fmtH(n)}
+      {data.length > 0 && (
+        <div className="rise card" style={{ ...hero(isShort ? "shortfall" : "fits"), marginBottom: SP.section }}>
+          {isShort ? (
+            <>
+              <div role="status" style={{ fontSize: 26, fontWeight: 700, letterSpacing: -0.6, lineHeight: 1.25 }}>
+                You're <span style={{ color: C.shortfall }}>{fmtH(short)} short</span> overall. {first.name} is the one that breaks first.
+              </div>
+              <div style={{ fontSize: 15, marginTop: 14, lineHeight: 1.55 }}>
+                {action.kind === "hours" && <>Add about <b style={{ fontWeight: 650 }}>{fmtH(action.perDay)} a day</b> until its exam on {fmtDate(first.date)} and it fits.</>}
+                {action.kind === "target" && <>Lower your target for {first.name}: its page shows the fastest way to the marks you need, and what that leaves out.</>}
+                {action.kind === "cut" && <>Cut about <b style={{ fontWeight: 650 }}>{action.chapters} chapter{action.chapters === 1 ? "" : "s"}</b> from {first.name}, the ones least likely to come up, or it won't be finished by {fmtDate(first.date)}.</>}
+              </div>
+              {action.kind === "hours"
+                ? <Tap className="focus-ring" onClick={onTime} style={actionBtn}>Change study time</Tap>
+                : <Tap className="focus-ring" onClick={() => onOpen(first.id)} style={actionBtn}>Open {first.name}</Tap>}
+            </>
+          ) : (
+            <>
+              <div role="status" style={{ fontSize: 26, fontWeight: 700, letterSpacing: -0.6, lineHeight: 1.25 }}>
+                Everything fits, with <span style={{ color: C.fits }}>{fmtH(totalSpare)} to spare</span>.
+              </div>
+              <div style={{ fontSize: 15, marginTop: 12, lineHeight: 1.55 }}>Spare hours are what absorbs a bad week.</div>
+            </>
+          )}
+          <div style={{ fontSize: 12.5, color: C.dim, marginTop: 16, lineHeight: 1.5, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
+            Every day's hours are shared between the subjects whose exams are still ahead,
+            weighted by how much each one needs. No hour is counted twice.
+          </div>
         </div>
-        <div style={{ fontSize: 17, marginTop: 14, lineHeight: 1.5, fontWeight: 500 }}>
-          {short > 0 ? (<>short overall. The tightest is <span style={{ color: C.shortfall }}>{worst?.name}</span>.</>) : (<>spare in total.</>)}
-        </div>
-        <div style={{ fontSize: 14, color: C.dim, marginTop: 10, lineHeight: 1.5 }}>
-          {short > 0
-            ? "Cut chapters, add hours, or accept the gap. Doing nothing is also a choice."
-            : "Keep the pace and don't add anything new."}
-        </div>
-        <div style={{ fontSize: 12.5, color: C.dim, marginTop: 14, lineHeight: 1.5, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
-          Every day's hours are shared between the subjects whose exams are still ahead,
-          weighted by how urgent each one is. No hour is counted twice.
-        </div>
-      </div>}
+      )}
 
-      {data.length > 0 && <SectionLabel>By subject</SectionLabel>}
+      {data.length > 0 && <SectionLabel>By subject, most at risk first</SectionLabel>}
       <CardGrid align="start">
-        {data.map((s, i) => {
+        {ranked.map((s, i) => {
           const max = Math.max(s.needed, s.available) || 1;
-          const fits = s.gap >= 0;
+          const v = verdictOf(s);
+          const col = VERDICT_COLOR[v.kind];
           return (
-            <div className="card" key={s.id} style={{ ...card, animation: `rise .5s ${EASE} ${0.08 * i + 0.1}s both` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
-                <div>
+            <div className="card" key={s.id} data-subject={s.name} style={{ ...card, animation: `rise .5s ${EASE} ${0.08 * i + 0.1}s both` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 16 }}>
+                <div style={{ minWidth: 0 }}>
                   <SubjectName s={s} />
                   <div style={{ fontSize: 12.5, color: C.dim, marginTop: 4 }}>
                     {key(s.windowStart) === key(new Date()) ? "Today" : fmtDate(s.windowStart)} – {fmtDate(s.date)} · {s.windowDays} study day{s.windowDays === 1 ? "" : "s"}
                   </div>
                 </div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: fits ? C.fits : C.shortfall }}>
-                  {fits ? "+" : "−"}{fmtH(Math.abs(s.gap))}
-                </div>
+                <span style={{ flexShrink: 0, fontSize: 12.5, fontWeight: 650, color: v.kind === "short" ? C.shortfall : C.dim, background: C.raised, border: `1px solid ${C.line}`, borderRadius: 99, padding: "3px 9px", fontVariantNumeric: "tabular-nums" }}>
+                  {s.gap >= 0 ? "+" : "−"}{fmtH(Math.abs(s.gap))}
+                </span>
               </div>
-              <Bar label="You have" hours={s.available} pct={go ? (s.available / max) * 100 : 0} color={C.lineHi} delay={0.1 * i} />
-              <Bar label="Still need" hours={s.needed} pct={go ? (s.needed / max) * 100 : 0} color={fits ? C.fits : C.shortfall} delay={0.1 * i + 0.08} />
+              <Bar label="Hours you'll have before this exam" hours={s.available} pct={go ? (s.available / max) * 100 : 0} color={C.lineHi} delay={0.1 * i} />
+              <Bar label="Hours this subject needs" hours={s.needed} pct={go ? (s.needed / max) * 100 : 0} color={v.kind === "short" ? C.shortfall : C.fits} delay={0.1 * i + 0.08} />
+              <div data-verdict={v.kind} style={{ fontSize: 16, fontWeight: 650, lineHeight: 1.4, color: col, marginTop: 4 }}>
+                {verdictText(s, v)}
+              </div>
+              <HowWorkedOut s={s} todayHours={todayHours} />
               <HoursSlider s={s} onCommit={onSetLog} />
             </div>
           );
@@ -2904,7 +3001,7 @@ function Sidebar({ screen, go, onAdd, onImport }) {
         onClick={onImport}
         style={{ width: "100%", marginTop: 8, background: "transparent", border: `1px solid ${C.lineHi}`, color: C.text, padding: "12px 0", borderRadius: 12, fontSize: 14.5, fontWeight: 600 }}
       >
-        Import from PDF
+        Import portions
       </Tap>
     </nav>
   );

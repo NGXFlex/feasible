@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { C, EASE, Tap, inputStyle, notice, card, choice, SectionLabel, CardGrid, SP, NumField } from "./ui.jsx";
 import {
-  MAX_PDF_BYTES, MAX_REQUEST_BYTES, draftFromPdf, draftChapters, draftIssues, subjectFromDraft,
+  MAX_PDF_BYTES, MAX_REQUEST_BYTES, MAX_FILES, mimeTypeOf, draftFromPdf, draftChapters, draftIssues, subjectFromDraft,
 } from "./engine/pdfPortions.js";
 import { TYPE_META, PACE, key, toDate } from "./engine/plan.js";
 
@@ -13,26 +13,58 @@ import { TYPE_META, PACE, key, toDate } from "./engine/plan.js";
 
 const fmtDate = (d) => toDate(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 
-/* Read a PDF in the browser and ask the server (api/parse-portions.js) for
-   what Gemini finds. Resolves to [{ name, examDate, chapters }]; rejects
-   with an Error whose message can be shown as it is. */
-export async function readPdfPortions(file) {
-  if (!file) throw new Error("No file was chosen.");
-  if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
-    throw new Error("That isn't a PDF. Choose a .pdf file, or add your subjects by hand instead.");
+export const ACCEPT = "application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png,image/heic,.heic,image/heif,.heif,image/webp,.webp";
+
+/* Is this file one we can send? null when it is, else a message to show. */
+export function fileProblem(file) {
+  if (!mimeTypeOf(file.name, file.type)) return `${file.name} isn't a PDF or a photo. Use a PDF, JPG, PNG, HEIC or WebP file.`;
+  if (file.size > MAX_PDF_BYTES) return `${file.name} is over 5 MB. Try a smaller file, or a lower-resolution photo.`;
+  return null;
+}
+
+const toBase64 = (blob) => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve(String(r.result).replace(/^data:[^;]+;base64,/, ""));
+  r.onerror = () => reject(new Error("That file couldn't be opened. Try again, or add your subjects by hand instead."));
+  r.readAsDataURL(blob);
+});
+
+/* Photos straight off a phone are often 3–5 MB, and everything has to go in
+   one request of about 3 MB. So a photo is redrawn at most 2000px on its
+   longest side, as a JPEG: plenty for reading text. A photo this browser
+   can't open (HEIC outside Safari) goes as it is. PDFs are never touched. */
+async function shrinkPhoto(file, mimeType) {
+  if (mimeType === "application/pdf" || typeof createImageBitmap !== "function") return null;
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 2000 / Math.max(bmp.width, bmp.height));
+    if (scale === 1 && file.size <= 600 * 1024) return null;   // already small
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", 0.85));
+    return blob && blob.size < file.size ? { blob, mimeType: "image/jpeg" } : null;
+  } catch {
+    return null;
   }
-  if (file.size > MAX_PDF_BYTES) {
-    throw new Error("That PDF is over 5 MB. Try a smaller file, or add your subjects by hand instead.");
+}
+
+/* Send a PDF or up to 5 photos to the server (api/parse-portions.js), in
+   order, in one request. Resolves to [{ name, examDate, chapters }];
+   rejects with an Error whose message can be shown as it is. */
+export async function readPortions(files) {
+  if (!files.length) throw new Error("No file was chosen.");
+  for (const f of files) { const p = fileProblem(f); if (p) throw new Error(p); }
+  const parts = [];
+  for (const f of files) {
+    const type = mimeTypeOf(f.name, f.type);
+    const small = await shrinkPhoto(f, type);
+    parts.push({ data: await toBase64(small?.blob ?? f), mimeType: small?.mimeType ?? type });
   }
-  const base64 = await new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result).replace(/^data:[^;]+;base64,/, ""));
-    r.onerror = () => reject(new Error("That file couldn't be opened. Try again, or add your subjects by hand instead."));
-    r.readAsDataURL(file);
-  });
-  const body = JSON.stringify({ pdf: base64 });
+  const body = JSON.stringify({ files: parts });
   if (body.length > MAX_REQUEST_BYTES) {
-    throw new Error("That PDF is too big to send (the limit is about 3 MB). Try a smaller file, or add your subjects by hand instead.");
+    throw new Error("Those files are too big to send together (the limit is about 3 MB in all). Try fewer photos or a smaller PDF, or add your subjects by hand instead.");
   }
   let res;
   try {
@@ -44,8 +76,8 @@ export async function readPdfPortions(file) {
   try { data = await res.json(); } catch { /* not JSON: no function here, or the host refused it */ }
   if (!res.ok || !Array.isArray(data?.subjects)) {
     if (data?.error) throw new Error(data.error);
-    if (res.status === 413) throw new Error("That PDF is too big to send (the limit is about 3 MB). Try a smaller file, or add your subjects by hand instead.");
-    throw new Error("PDF import isn't available here. Add your subjects by hand instead.");
+    if (res.status === 413) throw new Error("Those files are too big to send together (the limit is about 3 MB in all). Try fewer photos or a smaller PDF, or add your subjects by hand instead.");
+    throw new Error("Importing isn't available here. Add your subjects by hand instead.");
   }
   return data.subjects;
 }
@@ -59,7 +91,8 @@ const pill = (on) => ({ flex: 1, ...choice(on), borderRadius: 10, padding: "9px 
 
 export default function ImportPdf({ defaultPace, onCancel, onManual, onSave }) {
   const [step, setStep] = useState("upload");     // upload | reading | error | pick | confirm
-  const [fileName, setFileName] = useState("");
+  const [staged, setStaged] = useState([]);        // [{ id, file, type, url }] in reading order
+  const [stageNote, setStageNote] = useState("");  // why a file wasn't added
   const [error, setError] = useState("");
   const [found, setFound] = useState([]);           // what Gemini read, kept for the whole flow
   const [ticked, setTicked] = useState(() => new Set());
@@ -71,15 +104,46 @@ export default function ImportPdf({ defaultPace, onCancel, onManual, onSave }) {
 
   useEffect(() => { window.scrollTo?.(0, 0); }, [step]);
 
-  const upload = async (file) => {
-    if (!file) return;
+  /* thumbnails are object URLs: let them go when they're removed or the screen closes */
+  const urls = useRef([]);
+  useEffect(() => { urls.current = staged.map((x) => x.url).filter(Boolean); }, [staged]);
+  useEffect(() => () => urls.current.forEach((u) => URL.revokeObjectURL(u)), []);
+
+  const addFiles = (list) => {
+    const next = [...staged];
+    const notes = [];
+    for (const f of list ?? []) {
+      const problem = fileProblem(f);
+      if (problem) { notes.push(problem); continue; }
+      if (next.length >= MAX_FILES) { notes.push(`Up to ${MAX_FILES} files at a time, so ${f.name} wasn't added.`); continue; }
+      const type = mimeTypeOf(f.name, f.type);
+      next.push({ id: `${f.name}-${f.size}-${f.lastModified}-${Math.random()}`, file: f, type, url: type.startsWith("image/") ? URL.createObjectURL(f) : null });
+    }
+    setStaged(next);
+    setStageNote(notes.join(" "));
+  };
+  const removeFile = (id) => {
+    const x = staged.find((f) => f.id === id);
+    if (x?.url) URL.revokeObjectURL(x.url);
+    setStaged(staged.filter((f) => f.id !== id));
+    setStageNote("");
+  };
+  const clearFiles = () => { staged.forEach((x) => x.url && URL.revokeObjectURL(x.url)); setStaged([]); setStageNote(""); };
+  const photos = staged.some((x) => x.type !== "application/pdf");
+  const sending = staged.length === 1 ? staged[0].file.name : `${staged.length} files`;
+
+  const upload = async () => {
+    if (!staged.length) return;
     const id = ++run.current;
-    setFileName(file.name);
     setStep("reading");
     try {
-      const subjects = await readPdfPortions(file);
+      const subjects = await readPortions(staged.map((x) => x.file));
       if (id !== run.current) return;
-      if (!subjects.length) throw new Error("No subjects or chapters were found in that PDF. Add your subjects by hand instead.");
+      if (!subjects.length) {
+        throw new Error(photos
+          ? "Couldn't read that clearly — try a sharper photo, or enter it manually."
+          : "No subjects or chapters were found in that PDF. Add your subjects by hand instead.");
+      }
       setFound(subjects);
       setTicked(new Set());   // the document covers the whole year group, so nothing starts ticked
       setStep("pick");
@@ -116,8 +180,9 @@ export default function ImportPdf({ defaultPace, onCancel, onManual, onSave }) {
     <input
       id="portions-pdf"
       type="file"
-      accept="application/pdf,.pdf"
-      onChange={(e) => { upload(e.target.files?.[0]); e.target.value = ""; }}
+      multiple
+      accept={ACCEPT}
+      onChange={(e) => { addFiles([...(e.target.files ?? [])]); e.target.value = ""; }}
       style={{ position: "absolute", width: 1, height: 1, opacity: 0, overflow: "hidden" }}
     />
   );
@@ -125,32 +190,76 @@ export default function ImportPdf({ defaultPace, onCancel, onManual, onSave }) {
   return (
     <div style={{ padding: "60px 24px 0" }}>
       <Tap className="focus-ring" onClick={onCancel} style={{ ...textLink, marginBottom: 22 }}>‹ Subjects</Tap>
-      <h1 className="rise" style={{ fontSize: 34, fontWeight: 700, letterSpacing: -1, margin: "0 0 6px" }}>Import from PDF</h1>
+      <h1 className="rise" style={{ fontSize: 34, fontWeight: 700, letterSpacing: -1, margin: "0 0 6px" }}>Import portions</h1>
 
       {step === "upload" && (
         <>
           <p className="rise" style={{ color: C.dim, fontSize: 15, lineHeight: 1.55, margin: "0 0 24px", maxWidth: 560 }}>
-            Upload your school's portions or timetable. We'll pull out the subjects and chapters so you don't have to type them.
+            Upload a PDF or photos of your school's portions or timetable.
           </p>
-          <label
-            htmlFor="portions-pdf"
-            className="rise"
-            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => { e.preventDefault(); setDragging(false); upload(e.dataTransfer.files?.[0]); }}
-            style={{
-              display: "block", position: "relative", textAlign: "center", cursor: "pointer", maxWidth: 560,
-              border: `1.5px dashed ${dragging ? C.accent : C.lineHi}`, borderRadius: 18,
-              background: dragging ? C.accentSoft : C.surface, padding: "40px 20px",
-              transition: `background .2s ${EASE}, border-color .2s ${EASE}`,
-            }}
-          >
-            {fileInput}
-            <div style={{ fontSize: 16, fontWeight: 650 }}>Choose your portions PDF</div>
-            <div style={{ fontSize: 13, color: C.dim, marginTop: 6 }}>Drop it here, or tap to pick one · PDF only, up to 5 MB</div>
-          </label>
+          {staged.length < MAX_FILES && (
+            <label
+              htmlFor="portions-pdf"
+              className="rise"
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => { e.preventDefault(); setDragging(false); addFiles([...(e.dataTransfer.files ?? [])]); }}
+              style={{
+                display: "block", position: "relative", textAlign: "center", cursor: "pointer", maxWidth: 560,
+                border: `1.5px dashed ${dragging ? C.accent : C.lineHi}`, borderRadius: 18,
+                background: dragging ? C.accentSoft : C.surface, padding: staged.length ? "22px 20px" : "40px 20px",
+                transition: `background .2s ${EASE}, border-color .2s ${EASE}`,
+              }}
+            >
+              {fileInput}
+              <div style={{ fontSize: 16, fontWeight: 650 }}>{staged.length ? "Add another page" : "Choose a PDF or photos"}</div>
+              <div style={{ fontSize: 13, color: C.dim, marginTop: 6 }}>
+                Drop them here, or tap to pick · up to {MAX_FILES} files, 5 MB each
+              </div>
+            </label>
+          )}
+          {stageNote && <div role="alert" style={{ ...notice, fontSize: 13.5, lineHeight: 1.5, marginTop: 12, maxWidth: 560 }}>{stageNote}</div>}
+
+          {staged.length > 0 && (
+            <div style={{ maxWidth: 560, marginTop: 18 }}>
+              <div style={{ fontSize: 13, color: C.dim, marginBottom: 10 }}>
+                {staged.length > 1 ? "Read in this order. Remove any you don't need." : "Ready to read."}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))", gap: 10 }}>
+                {staged.map((x, i) => (
+                  <div key={x.id} data-file={x.file.name} style={{ position: "relative", aspectRatio: "3 / 4", borderRadius: 12, overflow: "hidden", border: `1px solid ${C.line}`, background: C.raised }}>
+                    {x.url ? (
+                      <img
+                        src={x.url}
+                        alt={`Page ${i + 1}: ${x.file.name}`}
+                        onError={(e) => { e.currentTarget.style.display = "none"; }}
+                        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", background: C.raised }}
+                      />
+                    ) : null}
+                    {/* under the picture: shows when there's no preview (a PDF, or HEIC this browser can't draw) */}
+                    <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 8, textAlign: "center" }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: C.dim }}>{x.type === "application/pdf" ? "PDF" : x.type.split("/")[1].toUpperCase()}</span>
+                      <span style={{ fontSize: 11, color: C.dim, marginTop: 4, overflowWrap: "anywhere", lineHeight: 1.3 }}>{x.file.name}</span>
+                    </div>
+                    <span style={{ position: "absolute", left: 6, top: 6, minWidth: 20, height: 20, borderRadius: 99, background: C.surface, color: C.text, fontSize: 11.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "var(--shadow)" }}>{i + 1}</span>
+                    <Tap
+                      className="focus-ring"
+                      aria-label={`Remove ${x.file.name}`}
+                      onClick={() => removeFile(x.id)}
+                      style={{ position: "absolute", right: 6, top: 6, width: 26, height: 26, borderRadius: 99, background: C.surface, color: C.text, fontSize: 16, lineHeight: 1, padding: 0, boxShadow: "var(--shadow)" }}
+                    >
+                      ×
+                    </Tap>
+                  </div>
+                ))}
+              </div>
+              <Tap className="focus-ring" onClick={upload} style={{ ...primary, marginTop: 18 }}>
+                {staged.length === 1 ? (photos ? "Read this photo" : "Read this PDF") : `Read ${staged.length} files`}
+              </Tap>
+            </div>
+          )}
           <div style={{ fontSize: 12.5, color: C.dim, marginTop: 14, lineHeight: 1.5, maxWidth: 560 }}>
-            The file is read once to find subjects, chapters and exam dates. You tick the subjects you take and check each one before anything is saved.
+            Several photos are read together, in order, as one document. You tick the subjects you take and check each one before anything is saved.
           </div>
         </>
       )}
@@ -161,7 +270,7 @@ export default function ImportPdf({ defaultPace, onCancel, onManual, onSave }) {
             <span className="pdf-spin" aria-hidden="true" style={{ width: 20, height: 20, flexShrink: 0, borderRadius: 99, border: `2.5px solid ${C.line}`, borderTopColor: C.accent }} />
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 16, fontWeight: 650 }}>Reading your portions…</div>
-              <div style={{ fontSize: 13, color: C.dim, marginTop: 3, overflowWrap: "anywhere" }}>{fileName} · this usually takes a few seconds</div>
+              <div style={{ fontSize: 13, color: C.dim, marginTop: 3, overflowWrap: "anywhere" }}>{sending} · this usually takes a few seconds</div>
             </div>
           </div>
           <Tap className="focus-ring" onClick={() => { run.current++; setStep("upload"); }} style={{ ...secondary, marginTop: 14 }}>Cancel</Tap>
@@ -172,10 +281,7 @@ export default function ImportPdf({ defaultPace, onCancel, onManual, onSave }) {
         <div style={{ marginTop: 24, maxWidth: 560 }}>
           <div role="alert" style={{ ...notice, fontSize: 15, lineHeight: 1.55 }}>{error}</div>
           <Tap className="focus-ring" onClick={onManual} style={{ ...primary, marginTop: 16 }}>Add subjects by hand instead</Tap>
-          <label htmlFor="portions-pdf" style={{ ...secondary, display: "block", position: "relative", textAlign: "center", marginTop: 10, cursor: "pointer", boxSizing: "border-box" }}>
-            {fileInput}
-            Try another file
-          </label>
+          <Tap className="focus-ring" onClick={() => setStep("upload")} style={{ ...secondary, marginTop: 10 }}>Try other files</Tap>
         </div>
       )}
 
@@ -228,10 +334,9 @@ export default function ImportPdf({ defaultPace, onCancel, onManual, onSave }) {
               <Tap className="focus-ring" disabled={!count} onClick={toConfirm} style={primary}>
                 {count ? `Continue with ${count} subject${count === 1 ? "" : "s"}` : "Tick at least one subject"}
               </Tap>
-              <label htmlFor="portions-pdf" style={{ ...secondary, display: "block", position: "relative", textAlign: "center", marginTop: 10, cursor: "pointer", boxSizing: "border-box" }}>
-                {fileInput}
-                Choose a different file
-              </label>
+              <Tap className="focus-ring" onClick={() => { clearFiles(); setStep("upload"); }} style={{ ...secondary, marginTop: 10 }}>
+                Choose different files
+              </Tap>
             </div>
           </div>
         );

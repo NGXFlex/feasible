@@ -5,13 +5,31 @@ import { cleanChapterName, parsePortions, DEFAULT_WEIGHT } from "./portions.js";
 /*  checked without it. Used by api/parse-portions.js and the client.   */
 /* ------------------------------------------------------------------ */
 
-export const MAX_PDF_BYTES = 5 * 1024 * 1024;
+export const MAX_PDF_BYTES = 5 * 1024 * 1024;   // per file
 /* Vercel refuses a function request body over 4.5 MB, and base64 makes a
-   file a third bigger, so a PDF has to stay under about 3.3 MB to arrive. */
+   file a third bigger, so everything sent together has to stay under about
+   3.3 MB. The browser shrinks photos before sending so several fit. */
 export const MAX_REQUEST_BYTES = 4.5 * 1024 * 1024;
+export const MAX_FILES = 5;
 export const MAX_SUBJECT_CHAPTERS = 60;
 
+/* what Gemini can read, by type; a file the browser gives no type gets one from its name */
+export const FILE_TYPES = {
+  "application/pdf": [".pdf"],
+  "image/jpeg": [".jpg", ".jpeg"],
+  "image/png": [".png"],
+  "image/heic": [".heic"],
+  "image/heif": [".heif"],
+  "image/webp": [".webp"],
+};
+export function mimeTypeOf(name, type) {
+  if (type && FILE_TYPES[type]) return type;
+  const ext = String(name ?? "").toLowerCase().match(/\.[a-z0-9]+$/)?.[0];
+  return Object.keys(FILE_TYPES).find((t) => FILE_TYPES[t].includes(ext)) ?? null;
+}
+
 export const GEMINI_PROMPT = `This is a student's exam portions document. It may also contain an exam timetable.
+The input may be photographs of a printed or handwritten document. Read them in the order given. Ignore glare, shadows and page edges.
 
 Return ONLY valid JSON, no markdown fences:
 {
@@ -31,23 +49,47 @@ Rules:
 - Drop unit headings, term labels, page numbers and marks columns.
 - examDate: only if the document clearly states an exam date for that subject. Convert any format (12/03/26, 12 March 2026, 12-03-2026) to YYYY-MM-DD. Assume DD/MM/YYYY for ambiguous numeric dates, as this is an Indian school document. If no date is stated, use null.
 - A subject with a date but no chapters is still valid — include it with an empty chapters array.
-- If nothing is identifiable, return { "subjects": [] }`;
+- If nothing is identifiable, return { "subjects": [] }
+- If nothing is legible, return { "subjects": [] }`;
 
-/* A request body that can be sent on: { pdf: "<base64>" } under 5 MB.
-   Returns { ok: true, base64 } or { ok: false, status, error }. */
+/* A request body that can be sent on:
+     { files: [{ data: "<base64>", mimeType }] }   up to 5, in reading order
+     { pdf: "<base64>" }                           one PDF (older clients)
+   each file under 5 MB. Returns { ok: true, files: [{ mimeType, base64 }] }
+   or { ok: false, status, error }. */
+export function checkPayload(body) {
+  const b = body && typeof body === "object" ? body : {};
+  const list = Array.isArray(b.files) ? b.files
+    : typeof b.pdf === "string" ? [{ data: b.pdf, mimeType: "application/pdf" }]
+    : null;
+  if (!list || !list.length) {
+    return { ok: false, status: 400, error: "No file was sent. Choose a PDF or photos and try again." };
+  }
+  if (list.length > MAX_FILES) {
+    return { ok: false, status: 400, error: `That's more than ${MAX_FILES} files. Send up to ${MAX_FILES} at a time.` };
+  }
+  const files = [];
+  for (const f of list) {
+    const data = typeof f?.data === "string" ? f.data : "";
+    const mimeType = FILE_TYPES[f?.mimeType] ? f.mimeType : null;
+    if (!mimeType) {
+      return { ok: false, status: 400, error: "Only PDFs and photos (JPG, PNG, HEIC or WebP) can be read." };
+    }
+    const base64 = data.replace(/^data:[^;]+;base64,/, "").replace(/\s+/g, "");
+    if (!base64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
+      return { ok: false, status: 400, error: "One of those files couldn't be read." };
+    }
+    if (base64Bytes(base64) > MAX_PDF_BYTES) {
+      return { ok: false, status: 413, error: "One of those files is over 5 MB. Try a smaller file, or enter it manually instead." };
+    }
+    files.push({ mimeType, base64 });
+  }
+  return { ok: true, files };
+}
+/* the single-PDF form, as before */
 export function checkPdfPayload(body) {
-  const pdf = body && typeof body === "object" ? body.pdf : undefined;
-  if (typeof pdf !== "string" || !pdf.trim()) {
-    return { ok: false, status: 400, error: "No PDF was sent. Choose a PDF file and try again." };
-  }
-  const base64 = pdf.replace(/^data:[^;]+;base64,/, "").replace(/\s+/g, "");
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
-    return { ok: false, status: 400, error: "That file couldn't be read as a PDF." };
-  }
-  if (base64Bytes(base64) > MAX_PDF_BYTES) {
-    return { ok: false, status: 413, error: "That PDF is over 5 MB. Try a smaller file, or use Paste portions instead." };
-  }
-  return { ok: true, base64 };
+  const r = checkPayload(body);
+  return r.ok ? { ok: true, base64: r.files[0].base64 } : r;
 }
 
 /* bytes a base64 string decodes to */
@@ -129,8 +171,8 @@ export function describeGeminiError(err) {
   if (status === 429 || /RESOURCE_EXHAUSTED|quota|rate limit/i.test(text)) {
     return { status: 429, error: "The free limit for reading PDFs has been reached for now. Use Paste portions instead — copy the chapter list out of the PDF and paste it in." };
   }
-  if (status === 400 && /pdf|mime|document|invalid/i.test(text)) {
-    return { status: 400, error: "Gemini couldn't read that PDF. If it's a scan or password-protected, use Paste portions instead." };
+  if (status === 400 && /pdf|mime|image|document|invalid/i.test(text)) {
+    return { status: 400, error: "Gemini couldn't read that file. If it's password-protected or damaged, enter it manually instead." };
   }
   if (status === 401 || status === 403 || /API key/i.test(text)) {
     return { status: 500, error: "PDF import isn't set up correctly on the server. Use Paste portions for now." };

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { GoogleGenerativeAI, GoogleGenerativeAIFetchError } from "@google/generative-ai";
 import {
   checkPdfPayload, parseModelReply, describeGeminiError, base64Bytes, normaliseExamDate, MAX_PDF_BYTES,
-  draftFromPdf, draftChapters, draftIssues, subjectFromDraft,
+  draftFromPdf, draftChapters, draftIssues, subjectFromDraft, checkPayload, mimeTypeOf, GEMINI_PROMPT,
 } from "./pdfPortions.js";
 import { parsePortions } from "./portions.js";
 import handler from "../../api/parse-portions.js";
@@ -20,6 +20,34 @@ test("pdf payload: a base64 PDF passes; missing, junk and oversized ones don't",
   const r = checkPdfPayload({ pdf: big });
   assert.equal(r.status, 413);
   assert.match(r.error, /5 MB/);
+});
+
+test("payload: up to 5 files, PDFs and photos, each with its own type", () => {
+  const jpg = { data: PDF, mimeType: "image/jpeg" };
+  const r = checkPayload({ files: [jpg, { data: PDF, mimeType: "image/heic" }, { data: PDF, mimeType: "application/pdf" }] });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.files.map((f) => f.mimeType), ["image/jpeg", "image/heic", "application/pdf"]);
+  assert.equal(checkPayload({ files: Array(6).fill(jpg) }).status, 400);
+  assert.match(checkPayload({ files: Array(6).fill(jpg) }).error, /up to 5/);
+  assert.match(checkPayload({ files: [{ data: PDF, mimeType: "image/gif" }] }).error, /PDFs and photos/);
+  assert.equal(checkPayload({ files: [] }).status, 400);
+  const big = "A".repeat(Math.ceil((MAX_PDF_BYTES + 10) / 3) * 4);
+  assert.equal(checkPayload({ files: [jpg, { data: big, mimeType: "image/png" }] }).status, 413, "5 MB is per file");
+  // the older single-PDF form still works
+  assert.deepEqual(checkPayload({ pdf: PDF }).files, [{ mimeType: "application/pdf", base64: PDF }]);
+});
+
+test("payload: a file the browser gives no type gets one from its name", () => {
+  assert.equal(mimeTypeOf("IMG_0042.HEIC", ""), "image/heic");
+  assert.equal(mimeTypeOf("notice.jpeg", ""), "image/jpeg");
+  assert.equal(mimeTypeOf("scan.pdf", "application/octet-stream"), "application/pdf");
+  assert.equal(mimeTypeOf("photo.png", "image/png"), "image/png");
+  assert.equal(mimeTypeOf("notes.docx", ""), null);
+});
+
+test("prompt: tells Gemini about photos and what to do when nothing is legible", () => {
+  assert.match(GEMINI_PROMPT, /The input may be photographs of a printed or handwritten document\. Read them in the order given\. Ignore glare, shadows and page edges\./);
+  assert.match(GEMINI_PROMPT, /If nothing is legible, return \{ "subjects": \[\] \}/);
 });
 
 test("pdf payload: base64 size is the decoded size", () => {
@@ -177,6 +205,22 @@ test("function: sends the PDF inline and returns the cleaned subjects", async ()
   assert.deepEqual(sent[0], { inlineData: { mimeType: "application/pdf", data: PDF } });
   assert.match(sent[1].text, /Return ONLY valid JSON/);
   assert.match(sent[1].text, /examDate/);
+});
+
+test("function: several photos go to Gemini in one request, in order, each with its type", async () => {
+  process.env.GEMINI_API_KEY = "test-key";
+  let sent;
+  fakeGemini(async (parts) => { sent = parts; return { response: { text: () => '{"subjects":[]}' } }; });
+  const a = Buffer.from("page one").toString("base64");
+  const b = Buffer.from("page two").toString("base64");
+  const r = await call({ body: { files: [{ data: a, mimeType: "image/jpeg" }, { data: b, mimeType: "image/png" }] } });
+  assert.equal(r.code, 200);
+  assert.deepEqual(sent.slice(0, 2), [
+    { inlineData: { mimeType: "image/jpeg", data: a } },
+    { inlineData: { mimeType: "image/png", data: b } },
+  ]);
+  assert.match(sent[2].text, /photographs/);
+  assert.deepEqual(r.body, { subjects: [] });
 });
 
 test("function: a JSON string body works too", async () => {

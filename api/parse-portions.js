@@ -1,12 +1,13 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { checkPdfPayload, parseModelReply, describeGeminiError, GEMINI_PROMPT } from "../src/engine/pdfPortions.js";
+import { checkPayload, parseModelReply, describeGeminiError, GEMINI_PROMPT } from "../src/engine/pdfPortions.js";
 
 /* ------------------------------------------------------------------
-   POST /api/parse-portions   { pdf: "<base64>" }
-   -> 200 { "Subject": ["Chapter", ...] }   or   4xx/5xx { error }
+   POST /api/parse-portions   { files: [{ data: "<base64>", mimeType }] }
+                              (or { pdf: "<base64>" } for one PDF)
+   -> 200 { subjects: [{ name, examDate, chapters }] }   or   4xx/5xx { error }
 
-   Vercel serverless function. Sends the PDF to Gemini and returns the
-   chapter list it finds. The app never saves this directly: the student
+   Vercel serverless function. Sends a PDF or up to 5 photos to Gemini in
+   one request, in order, and returns the subjects it finds. The app never saves this directly: the student
    reviews and edits it first.
 
    Needs GEMINI_API_KEY in the environment (Vercel > Project > Settings >
@@ -17,7 +18,7 @@ const MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
-    return res.status(405).json({ error: "Send the PDF with a POST request." });
+    return res.status(405).json({ error: "Send the files with a POST request." });
   }
 
   const key = process.env.GEMINI_API_KEY;
@@ -29,14 +30,15 @@ export default async function handler(req, res) {
   if (typeof body === "string") {
     try { body = JSON.parse(body); } catch { body = null; }
   }
-  const payload = checkPdfPayload(body);
+  const payload = checkPayload(body);
   if (!payload.ok) return res.status(payload.status).json({ error: payload.error });
 
   let reply;
   try {
     const model = new GoogleGenerativeAI(key).getGenerativeModel({ model: MODEL });
+    // every page or photo first, in the order given, then the instructions
     const result = await model.generateContent([
-      { inlineData: { mimeType: "application/pdf", data: payload.base64 } },
+      ...payload.files.map((f) => ({ inlineData: { mimeType: f.mimeType, data: f.base64 } })),
       { text: GEMINI_PROMPT },
     ]);
     reply = result.response.text();
