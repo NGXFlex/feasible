@@ -308,6 +308,21 @@ export function planForTarget(chapters, targetMarks, secureRate = MODEL.secureRa
     }
   }
 
+  /* Too many chapters to try every set (a long pasted list): take the most
+     marks per hour first, each only once what it needs is in. Close to the
+     minimum, not guaranteed to be it. */
+  if (cands.length > 20) {
+    const set = new Set();
+    let hours = 0, marks = securedMarks;
+    const rest = [...cands].sort((a, b) => b.marks / Math.max(b.hours, 1e-6) - a.marks / Math.max(a.hours, 1e-6));
+    while (marks + 1e-9 < needCover) {
+      const next = rest.find((c) => !set.has(c.id) && ok(new Set([...set, c.id])));
+      if (!next) break;
+      set.add(next.id); hours += next.hours; marks += next.marks;
+    }
+    if (marks + 1e-9 >= needCover) best = { set, hours, marks };
+  }
+
   const feasible = !!best;
   if (!best) {
     // even everything isn't enough (or too many chapters to search): do it all

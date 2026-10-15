@@ -1,7 +1,11 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
-import { C, FONT, Tap, inputStyle } from "./ui.jsx";
+import {
+  C, FONT, Tap, inputStyle, useIsDesktop, sheetOverlay, sheetPanel, SheetHandle,
+  SIDEBAR_W, CONTENT_MAX, MOBILE_MAX,
+} from "./ui.jsx";
 import Login from "./Login.jsx";
 import { SYLLABI, getSyllabus, readinessFactor, dailyNeed, planForTarget, exerciseMinutes, MODEL } from "./engine/syllabusEngine.js";
+import { parsePortions, WEIGHTS, DEFAULT_WEIGHT, marksFromWeights } from "./engine/portions.js";
 
 
 /* ------------------------------------------------------------------ */
@@ -156,26 +160,45 @@ async function loadState() {
 
 /* Local write is immediate; the Firestore write is debounced so that
    dragging a slider does not fire a request per frame. */
+let pendingSave = null;   // { obj, onStatus } waiting on the debounce
+
 function saveState(obj, onStatus) {
   localSet(obj);
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    const c = await getCloud();
-    if (!c) return;
-    try {
-      onStatus?.("saving");
-      await c.cloudSave(obj);
-      onStatus?.("cloud");
-    } catch (e) {
-      onStatus?.("offline");
-    }
-  }, 900);
+  pendingSave = { obj, onStatus };
+  saveTimer = setTimeout(flushSave, 900);
+}
+
+/* Sends the queued Firestore write now. Also runs when the page is hidden,
+   because loadState prefers the cloud copy: an edit still sitting in the
+   debounce when the app closes would otherwise be overwritten next launch. */
+async function flushSave() {
+  clearTimeout(saveTimer);
+  const p = pendingSave;
+  pendingSave = null;
+  if (!p) return;
+  const c = await getCloud();
+  if (!c) return;
+  try {
+    p.onStatus?.("saving");
+    await c.cloudSave(p.obj);
+    p.onStatus?.("cloud");
+  } catch (e) {
+    p.onStatus?.("offline");
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushSave);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushSave();
+  });
 }
 
 /* Used when the account changes. Whatever was queued for the old account
    must never be written into the new one, and a signed-out device must not
    keep the previous account's plan lying around. */
-function cancelPendingSave() { clearTimeout(saveTimer); }
+function cancelPendingSave() { clearTimeout(saveTimer); pendingSave = null; }
 
 /* "Continue without an account" lasts for this browser session only, so the
    login screen is the first thing every new launch shows unless someone is
@@ -318,16 +341,14 @@ function HoursSlider({ s, onCommit }) {
 /* one-day editor sheet */
 function DaySheet({ day, value, isCustom, onClose, onConfirm, onReset }) {
   const [v, setV] = useState(value);
+  const desktop = useIsDesktop();
   return (
-    <div
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 85, display: "flex", alignItems: "flex-end", justifyContent: "center", animation: "fadeIn .25s ease both" }}
-      onClick={onClose}
-    >
+    <div style={sheetOverlay(desktop, 85)} onClick={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
-        style={{ background: C.bg, borderTop: `1px solid ${C.line}`, borderRadius: "26px 26px 0 0", width: "100%", maxWidth: 430, padding: "10px 24px 32px", animation: "sheetUp .42s cubic-bezier(.32,.72,0,1) both", boxSizing: "border-box" }}
+        style={{ ...sheetPanel(desktop), padding: desktop ? "16px 28px 28px" : "10px 24px 32px" }}
       >
-        <div style={{ width: 38, height: 4, background: C.line, borderRadius: 99, margin: "0 auto 20px" }} />
+        <SheetHandle desktop={desktop} />
         <div style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>
           {fmtDay(day)} {fmtDate(day)}
         </div>
@@ -372,6 +393,7 @@ function DaySheet({ day, value, isCustom, onClose, onConfirm, onReset }) {
 
 /* ============================== APP =============================== */
 export default function App() {
+  const desktop = useIsDesktop();
   const [ready, setReady] = useState(false);
   const [screen, setScreen] = useState("onboard");
   const [dir, setDir] = useState("fwd");
@@ -562,6 +584,8 @@ export default function App() {
       const pm = paceMult(s.pace ?? pace);
       const baseChapter = meta.base * factor.factor * pm;
       const syl = s.syllabus ? getSyllabus(s.syllabus) : null;
+      // no syllabus but a weightage per chapter: split a 100-mark paper by weight
+      const chapterMarks = !syl && Array.isArray(s.weight) ? marksFromWeights(s.weight, s.chapters) : null;
       let raw = 0;
       let marks = 0, marksLeft = 0;
       const costs = [];
@@ -575,14 +599,15 @@ export default function App() {
           ? ch.hours.total * (diffMult(d) / diffMult(ch.diff)) * factor.factor * pm
           : baseChapter * diffMult(d);
         costs[i] = cost;
-        if (ch) { marks += ch.marksEst; if (!s.done[i]) marksLeft += ch.marksEst; }
+        const m = ch ? ch.marksEst : chapterMarks?.[i];
+        if (m != null) { marks += m; if (!s.done[i]) marksLeft += m; }
         if (s.done[i]) continue;
         raw += cost;
         outstanding.push({ i, d, cost, name: s.names?.[i] || `Chapter ${i + 1}` });
       }
       return {
-        s, meta, diffs, doneCount, remaining, baseChapter, raw, factor, costs, syl, pm,
-        marks: syl ? marks : null, marksLeft: syl ? marksLeft : null,
+        s, meta, diffs, doneCount, remaining, baseChapter, raw, factor, costs, syl, pm, chapterMarks,
+        marks: syl || chapterMarks ? marks : null, marksLeft: syl || chapterMarks ? marksLeft : null,
         need: Math.max(0, raw - s.logged), outstanding,
       };
     });
@@ -693,6 +718,7 @@ export default function App() {
         totalSpare: spare,
         expected, behind: expected - b.doneCount,
         factor: b.factor, costs: b.costs, syl: b.syl, marks: b.marks, marksLeft: b.marksLeft, pm: b.pm,
+        chapterMarks: b.chapterMarks,
         studyDays, perDay, havePerDay,
         overconfident: b.factor.overconfident,
       };
@@ -725,6 +751,7 @@ export default function App() {
     @keyframes fwdIn { from { opacity:0; transform: translateX(28px) scale(.99) } to { opacity:1; transform:none } }
     @keyframes backIn { from { opacity:0; transform: translateX(-28px) scale(.99) } to { opacity:1; transform:none } }
     @keyframes sheetUp { from { transform: translateY(100%) } to { transform: translateY(0) } }
+    @keyframes dialogIn { from { opacity:0; transform: translateY(12px) scale(.97) } to { opacity:1; transform:none } }
     @keyframes fadeIn { from { opacity:0 } to { opacity:1 } }
     @keyframes toastIn { from { opacity:0; transform: translate(-50%, 14px) } to { opacity:1; transform: translate(-50%,0) } }
     @keyframes rise { from { opacity:0; transform: translateY(14px) } to { opacity:1; transform:none } }
@@ -750,26 +777,33 @@ export default function App() {
   `;
 
   const tabbed = ["subjects", "reality", "plan", "time"].includes(screen);
-  const showBar = tabbed && !overlay && !sheet;
+  /* Desktop: a sidebar stays on every screen after onboarding and login,
+     and replaces the floating tab bar. Phones keep the tab bar. */
+  const withNav = desktop && ready && screen !== "onboard" && screen !== "login";
+  const showBar = !desktop && tabbed && !overlay && !sheet;
 
   return (
     <div
       className="appmin"
       style={{
         fontFamily: FONT, background: C.bg, color: C.text,
-        maxWidth: 430, margin: "0 auto", position: "relative", overflow: "hidden",
-        WebkitFontSmoothing: "antialiased",
+        position: "relative", WebkitFontSmoothing: "antialiased",
+        ...(desktop ? {} : { maxWidth: MOBILE_MAX, margin: "0 auto", overflow: "hidden" }),
       }}
     >
       <style>{styles}</style>
 
+      {withNav && <Sidebar screen={screen} go={go} onAdd={() => setSheet({ mode: "add" })} />}
+
+      <div style={desktop ? { marginLeft: withNav ? SIDEBAR_W : 0, overflowX: "hidden" } : undefined}>
+      <div style={desktop ? { maxWidth: withNav ? CONTENT_MAX : MOBILE_MAX, margin: "0 auto", padding: withNav ? "0 24px" : 0 } : undefined}>
       {!ready && <div className="appmin" />}
       {ready && (
       <div
         key={screen + openId}
         style={{
           animation: `${dir === "fwd" ? "fwdIn" : "backIn"} .4s cubic-bezier(.32,.72,0,1) both`,
-          paddingBottom: tabbed ? 104 : 32,
+          paddingBottom: tabbed && !desktop ? 104 : 48,
         }}
         className="appmin"
       >
@@ -833,6 +867,8 @@ export default function App() {
         )}
       </div>
       )}
+      </div>
+      </div>
 
       {ready && showBar && <TabBar screen={screen} go={go} />}
 
@@ -853,7 +889,8 @@ export default function App() {
       {toast && (
         <div
           style={{
-            position: "fixed", bottom: showBar ? 100 : 32, left: "50%",
+            position: "fixed", bottom: showBar ? 100 : 32,
+            left: withNav ? `calc(50% + ${SIDEBAR_W / 2}px)` : "50%",
             background: C.cardHi, border: `1px solid ${C.line}`, padding: "12px 20px",
             borderRadius: 999, fontSize: 14, fontWeight: 500,
             animation: "toastIn .35s cubic-bezier(.32,.72,0,1) both",
@@ -869,13 +906,25 @@ export default function App() {
 
 /* --------------------------- SAVE BAR --------------------------- */
 function SaveBar({ onSave, onCancel, label = "Save changes", bottom = 0 }) {
+  const desktop = useIsDesktop();
   return (
     <div
       style={{
-        position: "fixed", bottom, left: "50%", transform: "translateX(-50%)",
-        width: "100%", maxWidth: 430, padding: "12px 24px 14px",
+        position: "fixed", transform: "translateX(-50%)",
         background: "rgba(11,14,19,.9)", backdropFilter: "blur(20px)",
-        WebkitBackdropFilter: "blur(20px)", borderTop: `1px solid ${C.line}`,
+        WebkitBackdropFilter: "blur(20px)",
+        ...(desktop
+          ? {
+              // floats over the content column, clear of the sidebar
+              bottom: bottom + 24, left: `calc(50% + ${SIDEBAR_W / 2}px)`,
+              width: `min(${CONTENT_MAX - 48}px, calc(100vw - ${SIDEBAR_W + 48}px))`,
+              padding: 12, border: `1px solid ${C.line}`, borderRadius: 20,
+              boxShadow: "0 12px 34px rgba(0,0,0,.55)",
+            }
+          : {
+              bottom, left: "50%", width: "100%", maxWidth: MOBILE_MAX,
+              padding: "12px 24px 14px", borderTop: `1px solid ${C.line}`,
+            }),
         display: "flex", gap: 10, zIndex: 70,
         animation: "barUpCentered .35s cubic-bezier(.32,.72,0,1) both", boxSizing: "border-box",
       }}
@@ -1188,6 +1237,7 @@ function SyncChip({ sync }) {
 }
 
 function Subjects({ data, onOpen, onAdd, onSample, sync }) {
+  const desktop = useIsDesktop();
   return (
     <div style={{ padding: "60px 24px 0" }}>
       <Header title="Subjects" sub={`${data.length} exam${data.length === 1 ? "" : "s"} ahead`} />
@@ -1213,26 +1263,27 @@ function Subjects({ data, onOpen, onAdd, onSample, sync }) {
           </Tap>
         </div>
       )}
+      <div style={desktop ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 } : undefined}>
       {data.map((s, i) => (
         <Tap
           key={s.id}
           onClick={() => onOpen(s.id)}
           style={{
             display: "block", width: "100%", textAlign: "left", background: C.card,
-            border: `1px solid ${C.line}`, borderRadius: 20, padding: 0, marginBottom: 12,
+            border: `1px solid ${C.line}`, borderRadius: 20, padding: 0, marginBottom: desktop ? 0 : 12,
             overflow: "hidden", color: C.text,
             animation: `rise .5s cubic-bezier(.22,1,.36,1) ${0.05 * i}s both`,
           }}
         >
           <div style={{ display: "flex" }}>
-            <div style={{ width: 4, background: s.gap < 0 ? C.red : C.green, flexShrink: 0 }} />
+            <div style={{ width: 4, background: s.gap < -0.5 ? C.red : C.green, flexShrink: 0 }} />
             <div style={{ padding: "18px 20px", flex: 1 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                 <div style={{ fontSize: 18, fontWeight: 650, letterSpacing: -0.3 }}>{s.name}</div>
                 <div style={{ fontSize: 13, color: C.dim, fontVariantNumeric: "tabular-nums" }}>{fmtDate(s.date)}</div>
               </div>
-              <div style={{ marginTop: 8, fontSize: 14, color: s.gap < 0 ? C.red : C.green, fontWeight: 500 }}>
-                {s.gap < 0 ? `${Math.round(-s.gap)}h short` : `${Math.round(s.gap)}h spare`}
+              <div style={{ marginTop: 8, fontSize: 14, color: s.gap < -0.5 ? C.red : C.green, fontWeight: 500 }}>
+                {s.gap < -0.5 ? `${Math.round(-s.gap)}h short` : `${Math.round(s.gap)}h spare`}
                 <span style={{ color: C.dim, fontWeight: 400 }}>
                   {"  ·  "}{s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · {s.doneCount}/{s.chapters} chapters
                 </span>
@@ -1247,13 +1298,14 @@ function Subjects({ data, onOpen, onAdd, onSample, sync }) {
           </div>
         </Tap>
       ))}
+      </div>
       {data.length > 0 && (
         <>
           <Tap onClick={onAdd} style={{ width: "100%", marginTop: 8, background: "transparent", border: `1px dashed ${C.line}`, color: C.dim, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 500 }}>
             Add a subject
           </Tap>
           <div style={{ fontSize: 13, color: C.dim, textAlign: "center", marginTop: 12 }}>
-            Tap a subject to set chapter difficulty, rename chapters, or remove it.
+            {desktop ? "Click" : "Tap"} a subject to set chapter difficulty, rename chapters, or remove it.
           </div>
         </>
       )}
@@ -1269,6 +1321,7 @@ function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
   const [go, setGo] = useState(false);
   useEffect(() => { const t = setTimeout(() => setGo(true), 120); return () => clearTimeout(t); }, []);
   const flagged = data.filter((s) => s.overconfident);
+  const desktop = useIsDesktop();
 
   return (
     <div style={{ padding: "60px 24px 0" }}>
@@ -1292,11 +1345,12 @@ function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
         </div>
       </div>
 
+      <div style={desktop ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12, alignItems: "start" } : undefined}>
       {data.map((s, i) => {
         const max = Math.max(s.needed, s.available) || 1;
         const fits = s.gap >= 0;
         return (
-          <div key={s.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 12, animation: `rise .5s cubic-bezier(.22,1,.36,1) ${0.08 * i + 0.1}s both` }}>
+          <div key={s.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: desktop ? 0 : 12, animation: `rise .5s cubic-bezier(.22,1,.36,1) ${0.08 * i + 0.1}s both` }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
               <div>
                 <div style={{ fontSize: 17, fontWeight: 650, letterSpacing: -0.3 }}>{s.name}</div>
@@ -1314,6 +1368,7 @@ function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
           </div>
         );
       })}
+      </div>
 
       {flagged.map((s) => (
         <div key={s.id} className="rise" style={{ background: "#1C1710", border: "1px solid #3A2E17", borderRadius: 18, padding: "16px 20px", marginBottom: 12, fontSize: 14, lineHeight: 1.55, color: "#E9D3A6", animationDelay: ".35s" }}>
@@ -1339,6 +1394,54 @@ function Bar({ label, hours, pct, color, delay }) {
 }
 
 /* ------------------------------ PLAN ------------------------------ */
+/* Which subject first: urgency = hours still needed / study days left
+   before that exam, i.e. what it needs from each of its days. The more it
+   needs a day, the sooner it slips if you fall behind. An exam with no
+   study days left and work still to do is the most urgent of all. */
+function urgencyOf(s) {
+  if (s.perDay != null) return s.perDay;
+  return s.needed > 0 ? Infinity : 0;
+}
+
+function urgencyTag(s) {
+  const u = urgencyOf(s);
+  if (s.havePerDay == null) return s.needed > 0 ? { label: "At risk", color: C.red } : { label: "Comfortable", color: C.green };
+  if (u > s.havePerDay) return { label: "At risk", color: C.red };
+  if (u > s.havePerDay * 0.6) return { label: "Tight", color: C.amber };
+  return { label: "Comfortable", color: C.green };
+}
+
+function SubjectOrder({ data }) {
+  const ranked = [...data].sort((a, b) => urgencyOf(b) - urgencyOf(a) || new Date(a.date) - new Date(b.date));
+  return (
+    <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: "18px 20px", marginBottom: 18 }}>
+      <div style={{ fontSize: 16, fontWeight: 600 }}>Do these in this order</div>
+      <ol style={{ listStyle: "none", margin: "10px 0 0", padding: 0 }}>
+        {ranked.map((s, k) => {
+          const tag = urgencyTag(s);
+          return (
+            <li key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: k ? `1px solid ${C.line}` : "none" }}>
+              <span style={{ width: 18, flexShrink: 0, color: C.dim, fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{k + 1}</span>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: "block", fontSize: 15, fontWeight: 600 }}>{s.name}</span>
+                <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
+                  {s.perDay != null ? `${s.perDay.toFixed(1)}h a day` : "no study days left"} · exam {fmtDate(s.date)}
+                </span>
+              </span>
+              <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 650, color: tag.color, background: "rgba(255,255,255,.04)", border: `1px solid ${C.line}`, borderRadius: 99, padding: "4px 10px" }}>
+                {tag.label}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+      <div style={{ fontSize: 12.5, color: C.dim, marginTop: 10, paddingTop: 12, borderTop: `1px solid ${C.line}`, lineHeight: 1.5 }}>
+        Ordered by how much each subject needs per day against the days it has left. The ones at the top will slip first if you fall behind.
+      </div>
+    </div>
+  );
+}
+
 function Plan({ data }) {
   const [open, setOpen] = useState(data[0]?.id ?? null);
   const behindList = data.filter((s) => s.behind > 0);
@@ -1346,6 +1449,8 @@ function Plan({ data }) {
   return (
     <div style={{ padding: "60px 24px 0" }}>
       <Header title="Plan" sub="Phases sized to how each subject behaves" />
+
+      {data.length > 0 && <SubjectOrder data={data} />}
 
       <div
         className="rise"
@@ -1454,11 +1559,12 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
   const [draftNames, setDraftNames] = useState([]);
   const [draftDiff, setDraftDiff] = useState([]);
   const [draftCount, setDraftCount] = useState(0);
+  const [draftWeight, setDraftWeight] = useState([]);
   const [confirm, setConfirm] = useState(false);
   const [orderFor, setOrderFor] = useState(null);   // chapter index whose exercise order is open
 
   useEffect(() => {
-    if (s) { setDraftNames(s.names ?? []); setDraftDiff(s.diffs ?? []); setDraftCount(s.chapters); }
+    if (s) { setDraftNames(s.names ?? []); setDraftDiff(s.diffs ?? []); setDraftWeight(s.weight ?? []); setDraftCount(s.chapters); }
   }, [s?.id, s?.chapters]);
 
   useEffect(() => { setOverlay(editing || orderFor != null); return () => setOverlay(false); }, [editing, orderFor]);
@@ -1477,7 +1583,29 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
         }),
         (s.syl.totalMarks * target) / 100,
       )
-    : null;
+    : s.chapterMarks
+      ? planForTarget(
+          // ids are chapter positions; marks are each chapter's weighted share of 100
+          s.chapterMarks.map((m, i) => ({ id: i, marks: m, hours: s.costs[i], needs: [], secured: !!s.done[i] })),
+          target,
+        )
+      : null;
+  /* What PlanCard needs to name and price a chapter, whichever kind of plan it is */
+  const planSrc = s.syl
+    ? {
+        total: s.syl.totalMarks,
+        nameOf: (id) => s.syl.byId[id].name,
+        marksOf: (id) => s.syl.byId[id].marksEst,
+        hoursOf: (id) => { const i = s.refs?.indexOf(id) ?? -1; return i >= 0 ? s.costs[i] : 0; },
+        note: "Chapter marks come from CBSE's last two sample papers, so treat this as a guide.",
+      }
+    : {
+        total: 100,
+        nameOf: (i) => s.names?.[i] || `Chapter ${i + 1}`,
+        marksOf: (i) => s.chapterMarks[i],
+        hoursOf: (i) => s.costs[i],
+        note: "Chapter marks are a 100-mark paper split by the weightage you set, so treat this as a guide.",
+      };
   const leftOut = s.syl ? s.syl.chapters.filter((c) => !(s.refs ?? []).includes(c.id)).length : 0;
   const planPerDay = plan ? dailyNeed(plan.hours - (s.logged ?? 0), s.studyDays) : null;
   const orderCh = orderFor != null ? s.syl?.byId[s.refs?.[orderFor]] : null;
@@ -1487,7 +1615,10 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
     setDraftCount(n);
     setDraftNames((p) => Array.from({ length: n }, (_, i) => p[i] ?? ""));
     setDraftDiff((p) => Array.from({ length: n }, (_, i) => p[i] ?? 2));
+    setDraftWeight((p) => Array.from({ length: n }, (_, i) => p[i] ?? DEFAULT_WEIGHT));
   };
+  // syllabus chapters get their marks from sample papers; everything else is weighted by hand
+  const weighable = !s.syl;
 
   const commit = () => {
     onPatch(s.id, {
@@ -1495,6 +1626,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
       names: draftNames,
       diff: draftDiff,
       done: Array.from({ length: draftCount }, (_, i) => s.done[i] ?? false),
+      ...(weighable ? { weight: Array.from({ length: draftCount }, (_, i) => draftWeight[i] ?? DEFAULT_WEIGHT) } : {}),
       // chapters added here are your own; syllabus links stay on the ones that remain
       ...(s.refs ? { refs: Array.from({ length: draftCount }, (_, i) => s.refs[i] ?? null) } : {}),
     });
@@ -1572,6 +1704,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
         <PlanCard
           s={s}
           plan={plan}
+          src={planSrc}
           target={target}
           perDay={planPerDay}
           leftOut={leftOut}
@@ -1592,7 +1725,9 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
         <div className="rise" style={{ background: C.card, border: `1px solid ${C.amber}`, borderRadius: 18, padding: "14px 18px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 600 }}>Number of chapters</div>
-            <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>Mark each one Easy, Medium or Hard</div>
+            <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>
+              Mark each one Easy, Medium or Hard{weighable && ", and how much of the paper it carries"}
+            </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
             <Tap onClick={() => resize(draftCount - 1)} style={smallBtn}>−</Tap>
@@ -1633,9 +1768,19 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
                 );
               })}
             </div>
+            {weighable && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, paddingLeft: 32 }}>
+                <span style={{ fontSize: 11.5, color: C.dim, width: 64, flexShrink: 0 }}>Weightage</span>
+                <WeightPicker
+                  value={draftWeight[i] ?? DEFAULT_WEIGHT}
+                  onChange={(v) => setDraftWeight((p) => Array.from({ length: draftCount }, (_, j) => (j === i ? v : p[j] ?? DEFAULT_WEIGHT)))}
+                />
+              </div>
+            )}
           </div>
         ) : (() => {
           const ch = s.syl?.byId[s.refs?.[i]];
+          const wm = !ch ? s.chapterMarks?.[i] : null;
           return (
             <div key={i} style={{ position: "relative", marginBottom: 8 }}>
               <Tap
@@ -1652,6 +1797,11 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
                   {ch && (
                     <span style={{ display: "block", fontSize: 12, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
                       Ch {ch.no} · {ch.questions} questions · ~{fmtMarks(ch.marksEst)} marks
+                    </span>
+                  )}
+                  {wm != null && (
+                    <span style={{ display: "block", fontSize: 12, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
+                      {weightLabel(s.weight?.[i])} weightage · ~{fmtMarks(wm)} of 100
                     </span>
                   )}
                 </span>
@@ -1707,7 +1857,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
         <SaveBar
           label="Save chapters"
           onSave={commit}
-          onCancel={() => { setDraftNames(s.names ?? []); setDraftCount(s.chapters); setEditing(false); }}
+          onCancel={() => { setDraftNames(s.names ?? []); setDraftWeight(s.weight ?? []); setDraftCount(s.chapters); setEditing(false); }}
         />
       )}
     </div>
@@ -1715,12 +1865,9 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
 }
 
 /* ---------------------------- FASTEST PLAN ---------------------------- */
-function PlanCard({ s, plan, target, perDay, leftOut, onTarget }) {
-  const total = s.syl.totalMarks;
+function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
+  const { total, nameOf, marksOf, hoursOf, note } = src;
   const goal = (total * target) / 100;
-  const at = (id) => s.refs?.indexOf(id) ?? -1;
-  const hoursOf = (id) => (at(id) >= 0 ? s.costs[at(id)] : 0);
-  const marksOf = (id) => s.syl.byId[id].marksEst;
   const saved = plan.skipped.reduce((t, id) => t + hoursOf(id), 0);
   const skippedMarks = plan.skipped.reduce((t, id) => t + marksOf(id), 0);
   const accuracy = Math.round(plan.secureRate * 100);
@@ -1767,7 +1914,7 @@ function PlanCard({ s, plan, target, perDay, leftOut, onTarget }) {
               <li key={id} style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "8px 0", borderTop: k ? `1px solid ${C.line}` : "none" }}>
                 <span style={{ width: 18, flexShrink: 0, color: C.dim, fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>{k + 1}</span>
                 <span style={{ flex: 1, minWidth: 0, fontSize: 14, lineHeight: 1.4 }}>
-                  {s.syl.byId[id].name}
+                  {nameOf(id)}
                   {plan.extras.includes(id) && <span style={{ display: "block", color: C.green, fontSize: 12, marginTop: 2 }}>Cheap extra marks: added as safety margin</span>}
                 </span>
                 <span style={{ flexShrink: 0, fontSize: 12.5, color: C.dim, fontVariantNumeric: "tabular-nums" }}>
@@ -1780,7 +1927,7 @@ function PlanCard({ s, plan, target, perDay, leftOut, onTarget }) {
           {plan.skipped.length > 0 && (
             <div style={{ marginTop: 10, background: C.cardHi, borderRadius: 12, padding: "12px 14px", fontSize: 13.5, lineHeight: 1.5 }}>
               <b style={{ fontWeight: 650 }}>Leave for later:</b>{" "}
-              {plan.skipped.map((id) => s.syl.byId[id].name).join(", ")}. That saves {Math.round(saved)}h for about {fmtMarks(skippedMarks)} marks.
+              {plan.skipped.map(nameOf).join(", ")}. That saves {Math.round(saved)}h for about {fmtMarks(skippedMarks)} marks.
             </div>
           )}
         </>
@@ -1791,7 +1938,7 @@ function PlanCard({ s, plan, target, perDay, leftOut, onTarget }) {
           Covers about {fmtMarks(plan.coveredMarks)} of {total} marks
           {leftOut > 0 && <>, counting the {leftOut} chapter{leftOut === 1 ? "" : "s"} you left off this subject as done</>}.
           Getting about {accuracy}% of what you prepare right, that's ~{Math.round(plan.expectedMarks)} ({expectPct}%).
-          Chapter marks come from CBSE's last two sample papers, so treat this as a guide.
+          {" "}{note}
         </div>
       ) : (
         <div role="status" style={{ marginTop: 12, background: "#1C1710", border: "1px solid #3A2E17", borderRadius: 12, padding: "12px 14px", fontSize: 13.5, lineHeight: 1.5, color: "#E9D3A6" }}>
@@ -1805,6 +1952,7 @@ function PlanCard({ s, plan, target, perDay, leftOut, onTarget }) {
 
 /* --------------------------- EXERCISE ORDER --------------------------- */
 function ExerciseSheet({ ch, scale, multiplier, onClose }) {
+  const desktop = useIsDesktop();
   const box = useRef(null);
   const close = useRef(onClose);
   useEffect(() => { close.current = onClose; });   // always the latest, without re-running the setup below
@@ -1826,10 +1974,7 @@ function ExerciseSheet({ ch, scale, multiplier, onClose }) {
   );
 
   return (
-    <div
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 86, display: "flex", alignItems: "flex-end", justifyContent: "center", animation: "fadeIn .25s ease both" }}
-      onClick={onClose}
-    >
+    <div style={sheetOverlay(desktop, 86)} onClick={onClose}>
       <div
         ref={box}
         tabIndex={-1}
@@ -1838,9 +1983,9 @@ function ExerciseSheet({ ch, scale, multiplier, onClose }) {
         aria-labelledby="exercise-order-title"
         className="sheetbox"
         onClick={(e) => e.stopPropagation()}
-        style={{ background: C.bg, borderTop: `1px solid ${C.line}`, borderRadius: "26px 26px 0 0", width: "100%", maxWidth: 430, padding: "10px 24px 28px", overflowY: "auto", outline: "none", animation: "sheetUp .42s cubic-bezier(.32,.72,0,1) both", boxSizing: "border-box" }}
+        style={{ ...sheetPanel(desktop), padding: desktop ? "16px 28px 28px" : "10px 24px 28px", overflowY: "auto", outline: "none" }}
       >
-        <div style={{ width: 38, height: 4, background: C.line, borderRadius: 99, margin: "0 auto 20px" }} />
+        <SheetHandle desktop={desktop} />
         <div style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>Ch {ch.no} · {ch.name}</div>
         <h2 id="exercise-order-title" style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.6, margin: "8px 0 6px" }}>
           Which exercise first
@@ -1900,18 +2045,52 @@ function ExerciseSheet({ ch, scale, multiplier, onClose }) {
   );
 }
 
+/* ------------------------------ WEIGHTAGE ------------------------------ */
+const WEIGHT_COLOR = { 3: C.amber, 2: C.dim, 1: C.blue };
+const weightLabel = (v) => (WEIGHTS.find((w) => w.v === v) ?? WEIGHTS[1]).label;
+
+/* High / Medium / Low for one chapter */
+function WeightPicker({ value, onChange }) {
+  return (
+    <div role="group" aria-label="Weightage" style={{ display: "flex", gap: 5, flex: 1 }}>
+      {WEIGHTS.map((w) => {
+        const on = value === w.v;
+        const col = WEIGHT_COLOR[w.v];
+        return (
+          <Tap
+            key={w.v}
+            className="focus-ring"
+            aria-pressed={on}
+            onClick={() => onChange(w.v)}
+            style={{
+              flex: 1, background: on ? col : C.cardHi, color: on ? "#0B0E13" : C.dim,
+              border: `1px solid ${on ? col : C.line}`, borderRadius: 8, padding: "5px 0", fontSize: 11.5, fontWeight: 650,
+            }}
+          >
+            {w.label}
+          </Tap>
+        );
+      })}
+    </div>
+  );
+}
+
 /* --------------------------- SUBJECT SHEET --------------------------- */
 /* What a subject stores. Everything else on an analysed subject is computed. */
 const SUBJECT_KEYS = [
   "id", "name", "date", "createdAt", "chapters", "type", "confidence", "lastScore",
-  "pace", "logged", "names", "diff", "done", "syllabus", "refs", "target",
+  "pace", "logged", "names", "diff", "done", "weight", "syllabus", "refs", "target",
 ];
 const toStored = (o) => Object.fromEntries(SUBJECT_KEYS.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
 
 const fmtMarks = (m) => (Math.round(m * 2) / 2).toString();
+const PASTE = "paste";          // "Chapters from" option: a pasted portions list
+const MAX_CHAPTERS = 60;
+const PORTIONS_EXAMPLE = "UNIT I: PHYSICAL CHEMISTRY\n1. Solutions\n2. Electrochemistry\nCh 3 - Chemical Kinetics\n• d and f Block Elements";
 const newSubjectId = (name) => name.toLowerCase().replace(/\s+/g, "") + Date.now();
 
 function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
+  const desktop = useIsDesktop();
   const [f, setF] = useState(
     initial ?? {
       name: "", date: key(addDays(new Date(), 14)), chapters: 10,
@@ -1921,16 +2100,27 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const lbl = { fontSize: 13, color: C.dim, marginBottom: 8, display: "block" };
 
-  /* source: your own chapters, or a syllabus from the engine */
+  /* source: your own chapters, a pasted portions list, or a syllabus from the engine */
   const [srcId, setSrcId] = useState(initial?.syllabus ?? null);
-  const syl = srcId ? getSyllabus(srcId) : null;
+  const pasting = srcId === PASTE;
+  const syl = srcId && !pasting ? getSyllabus(srcId) : null;
+
+  /* pasted portions: parsed live; × deletes that line from the text itself,
+     so the text and the list never disagree */
+  const [pasteText, setPasteText] = useState("");
+  const [pasteWeight, setPasteWeight] = useState({});   // chapter name (lower case) -> weight
+  const parsedAll = pasting ? parsePortions(pasteText) : [];
+  const parsed = parsedAll.slice(0, MAX_CHAPTERS);
+  const weightOf = (name) => pasteWeight[name.toLowerCase()] ?? DEFAULT_WEIGHT;
+  const removeLine = (line) =>
+    setPasteText((t) => t.split(/\r?\n/).filter((_, j) => j !== line).join("\n"));
   const [picked, setPicked] = useState(() => {
     if (initial?.syllabus) return new Set((initial.refs ?? []).filter(Boolean));
     return new Set();
   });
   const chooseSource = (id) => {
     setSrcId(id);
-    if (!id) return;
+    if (!id || id === PASTE) return;
     const s = getSyllabus(id);
     setPicked(new Set(s.chapters.map((c) => c.id)));   // start with everything; untick what's done
     setF((p) => ({ ...p, name: p.name.trim() ? p.name : s.subject, type: "problem" }));
@@ -1944,7 +2134,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
   const chosenHours = chosen.reduce((t, c) => t + c.hours.total, 0) * factor.factor * pm;
   const chosenMarks = chosen.reduce((t, c) => t + c.marksEst, 0);
 
-  const valid = f.name.trim().length > 0 && (!syl || chosen.length > 0);
+  const valid = f.name.trim().length > 0 && (!syl || chosen.length > 0) && (!pasting || parsed.length > 0);
 
   const submitSyllabus = () => {
     const prevRefs = initial?.refs ?? [];
@@ -1969,8 +2159,22 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
     }));
   };
 
+  const submitPaste = () => {
+    const n = parsed.length;
+    onSave(toStored({
+      ...f, chapters: n,
+      id: newSubjectId(f.name),
+      createdAt: key(new Date()), logged: 0,
+      names: parsed.map((c) => c.name),
+      diff: Array(n).fill(2),
+      done: Array(n).fill(false),
+      weight: parsed.map((c) => weightOf(c.name)),
+    }));
+  };
+
   const submit = () => {
     if (syl) { submitSyllabus(); return; }
+    if (pasting) { submitPaste(); return; }
     const n = Math.max(1, f.chapters);
     if (mode === "edit") {
       onSave(toStored({
@@ -1978,6 +2182,8 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
         names: Array.from({ length: n }, (_, i) => initial.names?.[i] ?? ""),
         diff: Array.from({ length: n }, (_, i) => initial.diffs?.[i] ?? initial.diff?.[i] ?? 2),
         done: Array.from({ length: n }, (_, i) => initial.done?.[i] ?? false),
+        // subjects saved before weightage existed stay without it
+        ...(initial.weight ? { weight: Array.from({ length: n }, (_, i) => initial.weight[i] ?? DEFAULT_WEIGHT) } : {}),
       }));
     } else {
       onSave(toStored({
@@ -1987,6 +2193,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
         names: Array(n).fill(""),
         diff: Array(n).fill(2),
         done: Array(n).fill(false),
+        weight: Array(n).fill(DEFAULT_WEIGHT),
       }));
     }
   };
@@ -1997,16 +2204,13 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
   });
 
   return (
-    <div
-      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", zIndex: 80, display: "flex", alignItems: "flex-end", justifyContent: "center", animation: "fadeIn .25s ease both" }}
-      onClick={onClose}
-    >
+    <div style={sheetOverlay(desktop, 80)} onClick={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
         className="sheetbox"
-        style={{ background: C.bg, borderTop: `1px solid ${C.line}`, borderRadius: "26px 26px 0 0", width: "100%", maxWidth: 430, padding: "10px 24px 30px", overflowY: "auto", animation: "sheetUp .42s cubic-bezier(.32,.72,0,1) both" }}
+        style={{ ...sheetPanel(desktop), padding: desktop ? "16px 28px 28px" : "10px 24px 30px", overflowY: "auto" }}
       >
-        <div style={{ width: 38, height: 4, background: C.line, borderRadius: 99, margin: "0 auto 20px" }} />
+        <SheetHandle desktop={desktop} />
         <h2 style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.6, margin: "0 0 22px" }}>
           {mode === "edit" ? "Edit subject" : "Add a subject"}
         </h2>
@@ -2017,6 +2221,9 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
             <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
               <Tap className="focus-ring" aria-pressed={!srcId} onClick={() => chooseSource(null)} style={pill(!srcId)}>
                 Your own
+              </Tap>
+              <Tap className="focus-ring" aria-pressed={pasting} onClick={() => chooseSource(PASTE)} style={pill(pasting)}>
+                Paste portions
               </Tap>
               {SYLLABI.map((s) => (
                 <Tap key={s.id} className="focus-ring" aria-pressed={srcId === s.id} onClick={() => chooseSource(s.id)} style={pill(srcId === s.id)}>
@@ -2083,16 +2290,67 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
           </>
         ) : (
           <>
-            <label style={lbl}>Total chapters</label>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-              <Tap onClick={() => set("chapters", Math.max(1, f.chapters - 1))} style={roundBtn}>−</Tap>
-              <NumField
-                value={f.chapters} min={1} max={60}
-                onChange={(v) => set("chapters", Math.round(v))}
-                style={{ ...inputStyle, textAlign: "center", flex: 1 }}
-              />
-              <Tap onClick={() => set("chapters", f.chapters + 1)} style={roundBtn}>+</Tap>
-            </div>
+            {pasting ? (
+              <>
+                <label style={lbl} htmlFor="portions">Paste your portions list</label>
+                <textarea
+                  id="portions"
+                  rows={7}
+                  value={pasteText}
+                  placeholder={PORTIONS_EXAMPLE}
+                  onChange={(e) => setPasteText(e.target.value)}
+                  style={{ ...inputStyle, resize: "vertical", minHeight: 150, lineHeight: 1.5, fontSize: 15, marginBottom: 10 }}
+                />
+                <div aria-live="polite" style={{ fontSize: 13, color: parsed.length ? C.amber : C.dim, fontWeight: 600, marginBottom: 8 }}>
+                  {parsed.length} chapter{parsed.length === 1 ? "" : "s"} found
+                  {parsedAll.length > MAX_CHAPTERS && <span style={{ color: C.dim, fontWeight: 400 }}> · only the first {MAX_CHAPTERS} are kept</span>}
+                </div>
+                {parsed.length === 0 && (
+                  <div style={{ fontSize: 12, color: C.dim, marginBottom: 18, lineHeight: 1.5 }}>
+                    One chapter per line. Numbers, bullets and headings like "UNIT II" are left out for you.
+                  </div>
+                )}
+                {parsed.length > 0 && (
+                  <ol style={{ listStyle: "none", margin: "0 0 18px", padding: 0 }}>
+                    {parsed.map((c, k) => (
+                      <li key={c.line} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 12, padding: "8px 10px 10px", marginBottom: 6 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span style={{ width: 20, textAlign: "right", flexShrink: 0, color: C.dim, fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>{k + 1}</span>
+                          <span style={{ flex: 1, minWidth: 0, fontSize: 14, overflowWrap: "anywhere" }}>{c.name}</span>
+                          <Tap
+                            className="focus-ring"
+                            aria-label={`Remove ${c.name}`}
+                            onClick={() => removeLine(c.line)}
+                            style={{ width: 26, height: 26, flexShrink: 0, borderRadius: 8, background: "transparent", color: C.dim, fontSize: 17, lineHeight: 1, padding: 0 }}
+                          >
+                            ×
+                          </Tap>
+                        </div>
+                        <div style={{ display: "flex", marginTop: 6, paddingLeft: 30 }}>
+                          <WeightPicker
+                            value={weightOf(c.name)}
+                            onChange={(v) => setPasteWeight((p) => ({ ...p, [c.name.toLowerCase()]: v }))}
+                          />
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </>
+            ) : (
+              <>
+                <label style={lbl}>Total chapters</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+                  <Tap onClick={() => set("chapters", Math.max(1, f.chapters - 1))} style={roundBtn}>−</Tap>
+                  <NumField
+                    value={f.chapters} min={1} max={MAX_CHAPTERS}
+                    onChange={(v) => set("chapters", Math.round(v))}
+                    style={{ ...inputStyle, textAlign: "center", flex: 1 }}
+                  />
+                  <Tap onClick={() => set("chapters", f.chapters + 1)} style={roundBtn}>+</Tap>
+                </div>
+              </>
+            )}
 
             <label style={lbl}>How does this subject behave?</label>
             <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
@@ -2190,6 +2448,66 @@ const Icon = {
     </svg>
   ),
 };
+
+/* Desktop navigation: the same four tabs as the phone's TabBar, always
+   visible down the left edge. The subject detail page counts as Subjects. */
+function Sidebar({ screen, go, onAdd }) {
+  const [hover, setHover] = useState(null);
+  const tabs = [
+    { id: "subjects", label: "Subjects", icon: Icon.subjects },
+    { id: "reality", label: "Reality check", icon: Icon.reality },
+    { id: "plan", label: "Plan", icon: Icon.plan },
+    { id: "time", label: "Time", icon: Icon.time },
+  ];
+  const current = screen === "detail" ? "subjects" : screen;
+  const idx = tabs.findIndex((t) => t.id === current);
+
+  return (
+    <nav
+      aria-label="Main"
+      style={{
+        position: "fixed", top: 0, bottom: 0, left: 0, width: SIDEBAR_W, zIndex: 40,
+        borderRight: `1px solid ${C.line}`, background: "#0D1117",
+        padding: "36px 16px 24px", boxSizing: "border-box",
+        display: "flex", flexDirection: "column", gap: 4,
+      }}
+    >
+      <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5, color: C.amber, padding: "0 12px 28px" }}>
+        Feasible
+      </div>
+      {tabs.map((t, i) => {
+        const active = t.id === current;
+        const col = active ? C.amber : hover === t.id ? C.text : C.dim;
+        return (
+          <Tap
+            key={t.id}
+            className="focus-ring"
+            aria-current={active ? "page" : undefined}
+            onClick={() => { if (screen !== t.id) go(t.id, i >= idx ? "fwd" : "back"); }}
+            onMouseEnter={() => setHover(t.id)}
+            onMouseLeave={() => setHover(null)}
+            style={{
+              display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
+              background: active ? C.cardHi : hover === t.id ? C.card : "transparent",
+              color: col, borderRadius: 12, padding: "11px 12px", fontSize: 15, fontWeight: 600,
+              transition: "background .2s ease, color .2s ease",
+            }}
+          >
+            {t.icon(col)}
+            {t.label}
+          </Tap>
+        );
+      })}
+      <div style={{ flex: 1 }} />
+      <Tap
+        onClick={onAdd}
+        style={{ width: "100%", background: C.amber, color: "#181203", padding: "13px 0", borderRadius: 12, fontSize: 15, fontWeight: 650 }}
+      >
+        Add a subject
+      </Tap>
+    </nav>
+  );
+}
 
 function TabBar({ screen, go }) {
   const [open, setOpen] = useState(false);

@@ -284,3 +284,13 @@ test("planner: nothing to do when the target is already covered", () => {
   assert.equal(plan.order.length, 0);
   assert.equal(plan.hours, 0);
 });
+
+test("planner: more than 20 chapters still finds a plan that reaches the target", () => {
+  // 30 chapters worth 100 marks, a long pasted list: too many to try every set
+  const input = Array.from({ length: 30 }, (_, i) => ({ id: i, marks: (i % 3 + 1) * 100 / 60, hours: 2 + (i % 5) }));
+  const plan = planForTarget(input, 60);
+  assert.equal(plan.feasible, true);
+  assert.ok(plan.coveredMarks + 1e-9 >= 60 / MODEL.secureRate);
+  assert.ok(plan.skipped.length > 0);
+  assert.equal(plan.order.length + plan.skipped.length, 30);
+});
