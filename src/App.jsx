@@ -6,6 +6,7 @@ import {
 import Login from "./Login.jsx";
 import { SYLLABI, getSyllabus, readinessFactor, dailyNeed, planForTarget, exerciseMinutes, MODEL } from "./engine/syllabusEngine.js";
 import { parsePortions, WEIGHTS, DEFAULT_WEIGHT, marksFromWeights } from "./engine/portions.js";
+import { shareDays } from "./engine/schedule.js";
 
 
 /* ------------------------------------------------------------------ */
@@ -74,6 +75,21 @@ function studyDaysBetween(from, to, wd, we, ov) {
     cur = addDays(cur, 1);
   }
   return n;
+}
+
+/* first and last day with study time in them, from `from` up to (not
+   including) `to`; null when there are none */
+function studyWindow(from, to, wd, we, ov) {
+  let first = null, last = null;
+  let cur = startOfDay(from);
+  const end = startOfDay(to);
+  let guard = 0;
+  while (cur < end && guard++ < 800) {
+    const k = key(cur);
+    if ((k in ov ? ov[k] : defaultHours(cur, wd, we)) > 0) { first ??= cur; last = cur; }
+    cur = addDays(cur, 1);
+  }
+  return { first, last };
 }
 
 /* ------------------------- persistence -------------------------
@@ -612,65 +628,30 @@ export default function App() {
       };
     });
 
-    /* ---- 2. day-by-day simulation ----
-       Every day, the hours available are shared between all subjects whose
-       exam is still ahead. Each subject's claim is its remaining workload
-       divided by the days it has left, so a nearer exam pulls harder.
-       If the day cannot cover every claim, each gets a proportional share
-       and the deficit shows up as a shortfall. No hour is spent twice.    */
-    const lastDate = base.reduce((a, b) => (new Date(b.s.date) > new Date(a) ? b.s.date : a), base[0].s.date);
-    const alloc = base.map(() => []);
-    const left = base.map((b) => b.need);
-    let spare = 0;
-
-    let cur = startOfDay(new Date());
-    const stop = startOfDay(lastDate);
-    let guard = 0;
-    while (cur < stop && guard++ < 800) {
-      const k = key(cur);
-      const hours = k in ov ? ov[k] : defaultHours(cur, wd, we);
-      if (hours <= 0) { cur = addDays(cur, 1); continue; }
-
-      const active = [];
-      base.forEach((b, i) => {
-        if (left[i] <= 1e-9) return;
-        const daysLeft = Math.round((startOfDay(b.s.date) - startOfDay(cur)) / dayMs);
-        if (daysLeft <= 0) return;
-        active.push({ i, rate: left[i] / daysLeft });
-      });
-
-      if (!active.length) { spare += hours; cur = addDays(cur, 1); continue; }
-
-      const totalRate = active.reduce((t, a) => t + a.rate, 0);
-      let used = 0;
-      active.forEach((a) => {
-        const share = totalRate <= hours ? a.rate : hours * (a.rate / totalRate);
-        const give = Math.min(share, left[a.i]);
-        if (give > 1e-9) {
-          alloc[a.i].push({ d: new Date(cur), h: give });
-          left[a.i] -= give;
-          used += give;
-        }
-      });
-      spare += Math.max(0, hours - used);
-      cur = addDays(cur, 1);
-    }
+    /* ---- 2. day-by-day simulation (engine/schedule.js) ---- */
+    const hoursOn = (d) => { const k = key(d); return k in ov ? ov[k] : defaultHours(d, wd, we); };
+    const sim = shareDays(base.map((b) => ({ need: b.need, date: b.s.date })), hoursOn, new Date());
+    const spare = sim.spare;
 
     /* ---- 3. per-subject results ---- */
     return base.map((b, i) => {
-      const days = alloc[i];
-      const available = days.reduce((t, x) => t + x.h, 0);
-      const windowStart = days[0]?.d ?? startOfDay(new Date());
-      const windowEnd = days[days.length - 1]?.d ?? startOfDay(b.s.date);
-      const windowDays = days.length;
+      const { days, allocated, available } = sim.subjects[i];
+      // the subject's window is every study day from today to its exam,
+      // whether or not it still needs any of them
+      const today = new Date();
+      const studyDays = studyDaysBetween(today, b.s.date, wd, we, ov);
+      const { first, last } = studyWindow(today, b.s.date, wd, we, ov);
+      const windowStart = first ?? startOfDay(today);
+      const windowEnd = last ?? startOfDay(b.s.date);
+      const windowDays = studyDays;
 
-      /* phases split by hours across the days this subject actually gets */
+      /* phases split the hours this subject is given, over the days it gets them */
       const phases = [];
       let idx = 0, acc = 0, mark = 0;
       b.meta.phases.forEach((p, pi) => {
         const last = pi === b.meta.phases.length - 1;
         const reserve = b.meta.phases.length - pi - 1;
-        const target = mark + available * p;
+        const target = mark + allocated * p;
         const startIdx = idx;
         if (last) {
           idx = days.length;
@@ -688,7 +669,7 @@ export default function App() {
           to: slice[slice.length - 1]?.d ?? null,
           days: slice.length,
           hours: hrs,
-          pct: available ? (hrs / available) * 100 : 0,
+          pct: allocated ? (hrs / allocated) * 100 : 0,
         });
         mark = target;
       });
@@ -702,8 +683,6 @@ export default function App() {
 
       /* daily load: this subject's remaining hours over the study days left
          before its exam, next to what an average one of those days holds */
-      const today = new Date();
-      const studyDays = studyDaysBetween(today, b.s.date, wd, we, ov);
       const perDay = dailyNeed(b.need, studyDays);
       const havePerDay = studyDays ? hoursBetween(today, b.s.date, wd, we, ov) / studyDays : null;
 
@@ -713,7 +692,8 @@ export default function App() {
         perChapter: b.remaining ? b.raw / b.remaining : b.baseChapter,
         raw: b.raw, needed: b.need, available,
         windowStart, windowEnd, windowDays, phases, priority,
-        squeezed: phases.filter((x) => x.days === 0).length,
+        // a phase with no days only matters while there's work left
+        squeezed: b.need > 0 ? phases.filter((x) => x.days === 0).length : 0,
         gap: available - b.need,
         totalSpare: spare,
         expected, behind: expected - b.doneCount,
@@ -1332,7 +1312,7 @@ function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
           {Math.round(n)}h
         </div>
         <div style={{ fontSize: 17, marginTop: 12, lineHeight: 1.5, fontWeight: 500 }}>
-          {short > 0 ? (<>short overall. The tightest is <span style={{ color: C.red }}>{worst?.name}</span>.</>) : (<>spare across every subject. Your plan fits.</>)}
+          {short > 0 ? (<>short overall. The tightest is <span style={{ color: C.red }}>{worst?.name}</span>.</>) : (<>spare in total.</>)}
         </div>
         <div style={{ fontSize: 14, color: C.dim, marginTop: 10, lineHeight: 1.5 }}>
           {short > 0
@@ -1340,8 +1320,8 @@ function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
             : "Keep the pace and don't add anything new."}
         </div>
         <div style={{ fontSize: 12.5, color: C.dim, marginTop: 12, lineHeight: 1.5, paddingTop: 12, borderTop: `1px solid rgba(255,255,255,.07)` }}>
-          Time is split in exam order — each subject only gets the days left after the
-          one before it, so the hours never get counted twice.
+          Every day's hours are shared between the subjects whose exams are still ahead,
+          weighted by how urgent each one is. No hour is counted twice.
         </div>
       </div>
 
@@ -1355,7 +1335,7 @@ function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
               <div>
                 <div style={{ fontSize: 17, fontWeight: 650, letterSpacing: -0.3 }}>{s.name}</div>
                 <div style={{ fontSize: 12.5, color: C.dim, marginTop: 4 }}>
-                  {i === 0 ? "Today" : fmtDate(s.windowStart)} – {fmtDate(s.date)} · {s.windowDays} study day{s.windowDays === 1 ? "" : "s"}
+                  {key(s.windowStart) === key(new Date()) ? "Today" : fmtDate(s.windowStart)} – {fmtDate(s.date)} · {s.windowDays} study day{s.windowDays === 1 ? "" : "s"}
                 </div>
               </div>
               <div style={{ fontSize: 14, fontWeight: 600, color: fits ? C.green : C.red, fontVariantNumeric: "tabular-nums" }}>
@@ -1659,7 +1639,18 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
         </div>
       </div>
 
-      {s.perDay != null && (
+      {s.perDay != null && s.needed <= 0 && (
+        <div className="rise" style={{ background: "#101C18", border: "1px solid #17342B", borderRadius: 20, padding: 20, marginBottom: 16, animationDelay: ".05s" }}>
+          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5, color: C.green }}>
+            {s.remaining === 0 ? "Nothing left — all chapters done" : "Nothing left — your logged hours cover the rest"}
+          </div>
+          <div style={{ fontSize: 13, color: C.dim, marginTop: 8, lineHeight: 1.5 }}>
+            Keep it fresh with revision until {fmtDate(s.date)}.
+          </div>
+        </div>
+      )}
+
+      {s.perDay != null && s.needed > 0 && (
         <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 16, animationDelay: ".05s" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
             <div>
@@ -1726,8 +1717,9 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
           <div>
             <div style={{ fontSize: 15, fontWeight: 600 }}>Number of chapters</div>
             <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>
-              Mark each one Easy, Medium or Hard{weighable && ", and how much of the paper it carries"}
+              Mark how hard each one is{weighable && ", and how many marks it carries"}
             </div>
+            {weighable && <div style={{ fontSize: 12, color: C.dim, marginTop: 6, lineHeight: 1.45 }}>{WEIGHT_EXPLAINER}</div>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
             <Tap onClick={() => resize(draftCount - 1)} style={smallBtn}>−</Tap>
@@ -1749,7 +1741,8 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
                 style={{ ...inputStyle, padding: "10px 12px", fontSize: 15 }}
               />
             </div>
-            <div style={{ display: "flex", gap: 6, marginTop: 8, paddingLeft: 32 }}>
+            <span style={{ ...tinyLabel, marginTop: 8, paddingLeft: 32 }}>{DIFF_QUESTION}</span>
+            <div style={{ display: "flex", gap: 6, paddingLeft: 32 }}>
               {DIFF.map((dd) => {
                 const on = (draftDiff[i] ?? 2) === dd.v;
                 return (
@@ -1769,12 +1762,14 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
               })}
             </div>
             {weighable && (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, paddingLeft: 32 }}>
-                <span style={{ fontSize: 11.5, color: C.dim, width: 64, flexShrink: 0 }}>Weightage</span>
+              <div style={{ marginTop: 8, paddingLeft: 32 }}>
+                <span style={tinyLabel}>{WEIGHT_QUESTION}</span>
+                <div style={{ display: "flex" }}>
                 <WeightPicker
                   value={draftWeight[i] ?? DEFAULT_WEIGHT}
                   onChange={(v) => setDraftWeight((p) => Array.from({ length: draftCount }, (_, j) => (j === i ? v : p[j] ?? DEFAULT_WEIGHT)))}
                 />
+                </div>
               </div>
             )}
           </div>
@@ -1800,18 +1795,26 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
                     </span>
                   )}
                   {wm != null && (
-                    <span style={{ display: "block", fontSize: 12, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
-                      {weightLabel(s.weight?.[i])} weightage · ~{fmtMarks(wm)} of 100
+                    <span style={{ display: "block", marginTop: 6 }}>
+                      {!s.done[i] && (
+                        <span title="Difficulty" style={chip(diffMeta(s.diffs?.[i] ?? 2).color)}>{diffMeta(s.diffs?.[i] ?? 2).label}</span>
+                      )}
+                      <span title="Weightage" style={chip(C.text)}>~{fmtMarks(wm)} marks</span>
                     </span>
                   )}
                 </span>
                 {/* the right column keeps its width even when done, so the order button never covers text */}
                 <span style={{ flexShrink: 0, minWidth: ch ? 74 : 0, textAlign: "right" }}>
-                  {!s.done[i] && (
+                  {!s.done[i] && (wm != null ? (
+                    // difficulty is already a chip under the name
+                    <span style={{ fontSize: 12, color: C.dim, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                      {(s.costs?.[i] ?? s.baseChapter * diffMult(s.diffs?.[i] ?? 2)).toFixed(1)}h
+                    </span>
+                  ) : (
                     <span style={{ fontSize: 12, color: diffMeta(s.diffs?.[i] ?? 2).color, fontWeight: 600 }}>
                       {diffMeta(s.diffs?.[i] ?? 2).label} · {(s.costs?.[i] ?? s.baseChapter * diffMult(s.diffs?.[i] ?? 2)).toFixed(1)}h
                     </span>
-                  )}
+                  ))}
                 </span>
               </Tap>
               {ch && (
@@ -1871,6 +1874,10 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
   const saved = plan.skipped.reduce((t, id) => t + hoursOf(id), 0);
   const skippedMarks = plan.skipped.reduce((t, id) => t + marksOf(id), 0);
   const accuracy = Math.round(plan.secureRate * 100);
+  // hours already logged on this subject come off, as they do in the per-day figure
+  const logged = s.logged ?? 0;
+  const hoursLeft = Math.max(0, plan.hours - logged);
+  const hoursAll = Math.max(0, plan.hours + saved - logged);
   const expectPct = Math.round((plan.expectedMarks / total) * 100);
 
   return (
@@ -1895,9 +1902,10 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
         <>
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
             <div style={{ flex: 1, background: C.cardHi, borderRadius: 14, padding: "12px 14px" }}>
-              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: C.amber, fontVariantNumeric: "tabular-nums" }}>{Math.round(plan.hours)}h</div>
+              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: C.amber, fontVariantNumeric: "tabular-nums" }}>{Math.round(hoursLeft)}h</div>
               <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>
-                {plan.skipped.length ? `instead of ${Math.round(plan.hours + saved)}h` : "every chapter left"}
+                {plan.skipped.length ? `instead of ${Math.round(hoursAll)}h` : "every chapter left"}
+                {logged > 0 && `, after ${Math.round(logged)}h already logged`}
               </div>
             </div>
             <div style={{ flex: 1, background: C.cardHi, borderRadius: 14, padding: "12px 14px" }}>
@@ -2047,12 +2055,20 @@ function ExerciseSheet({ ch, scale, multiplier, onClose }) {
 
 /* ------------------------------ WEIGHTAGE ------------------------------ */
 const WEIGHT_COLOR = { 3: C.amber, 2: C.dim, 1: C.blue };
-const weightLabel = (v) => (WEIGHTS.find((w) => w.v === v) ?? WEIGHTS[1]).label;
+const DIFF_QUESTION = "How hard is this chapter?";
+const WEIGHT_QUESTION = "How many marks does this usually carry?";
+const WEIGHT_EXPLAINER = "Difficulty is how hard it is for you. Weightage is how much it's worth in the exam. A chapter can be easy and still carry a lot of marks.";
+const tinyLabel = { display: "block", fontSize: 11.5, color: C.dim, marginBottom: 5 };
+const chip = (color) => ({
+  display: "inline-block", fontSize: 11.5, fontWeight: 650, color, lineHeight: 1.3,
+  background: "rgba(255,255,255,.04)", border: `1px solid ${C.line}`, borderRadius: 99,
+  padding: "2px 8px", marginRight: 6, fontVariantNumeric: "tabular-nums",
+});
 
 /* High / Medium / Low for one chapter */
 function WeightPicker({ value, onChange }) {
   return (
-    <div role="group" aria-label="Weightage" style={{ display: "flex", gap: 5, flex: 1 }}>
+    <div role="group" aria-label={WEIGHT_QUESTION} style={{ display: "flex", gap: 5, flex: 1 }}>
       {WEIGHTS.map((w) => {
         const on = value === w.v;
         const col = WEIGHT_COLOR[w.v];
@@ -2308,6 +2324,11 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
                 {parsed.length === 0 && (
                   <div style={{ fontSize: 12, color: C.dim, marginBottom: 18, lineHeight: 1.5 }}>
                     One chapter per line. Numbers, bullets and headings like "UNIT II" are left out for you.
+                  </div>
+                )}
+                {parsed.length > 0 && (
+                  <div style={{ fontSize: 12, color: C.dim, marginBottom: 10, lineHeight: 1.5 }}>
+                    <b style={{ color: C.text, fontWeight: 600 }}>{WEIGHT_QUESTION}</b> {WEIGHT_EXPLAINER}
                   </div>
                 )}
                 {parsed.length > 0 && (

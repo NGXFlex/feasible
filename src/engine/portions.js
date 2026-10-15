@@ -31,11 +31,12 @@ export function parsePortions(text) {
   return out;
 }
 
-/* Weightage per chapter: how much of the paper it is likely to carry. */
+/* Weightage per chapter: how much of the paper it is likely to carry.
+   Labels always say "marks", so they can't be mistaken for difficulty. */
 export const WEIGHTS = [
-  { v: 3, label: "High" },
-  { v: 2, label: "Medium" },
-  { v: 1, label: "Low" },
+  { v: 1, label: "Low marks" },
+  { v: 2, label: "Medium marks" },
+  { v: 3, label: "High marks" },
 ];
 export const DEFAULT_WEIGHT = 2;
 
