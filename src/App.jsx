@@ -546,6 +546,10 @@ export default function App() {
     if (!sessionActive(session)) setSession(newSession(id, from));
     go("timer");
   };
+  /* the Timer tab with nothing running: a blank session, subject not chosen yet */
+  useEffect(() => {
+    if (screen === "timer" && !session && analysis.length) setSession(newSession(null, "timer"));
+  }, [screen, session, analysis.length]);
   function closeTimer() {
     if (!sessionActive(session)) setSession(null);
     go(session?.from ?? "today", "back");
@@ -729,14 +733,14 @@ export default function App() {
         )}
         {screen === "timer" && (session ? (
           <Timer
-            s={analysis.find((x) => x.id === session.subjectId)}
+            subjects={analysis}
             session={session}
             setSession={setSession}
             onLog={(minutes, chapter) => logSession(session.subjectId, minutes, chapter)}
             onClose={closeTimer}
           />
         ) : (
-          <TimerPicker data={analysis} onPick={(id) => setSession(newSession(id, "timer"))} {...emptyActions} />
+          <TimerPicker {...emptyActions} />
         ))}
         {screen === "detail" && (
           <Detail
@@ -1252,41 +1256,17 @@ function Settings({ theme, onTheme, palette, onPalette, pace, onSavePace, wd, we
 
 /* ----------------------------- TIMER TAB ----------------------------- */
 /* The Timer tab with no session yet: choose what to study, most urgent first */
-function TimerPicker({ data, onPick, onAdd, onImport }) {
-  const ranked = rankByUrgency(data);
+/* The Timer tab before there's anything to time: subjects are chosen on the timer itself */
+function TimerPicker({ onAdd, onImport }) {
   return (
     <div style={{ padding: PAGE_PAD }}>
       <Header title="Timer" sub="Time a study session; it's added to your hours when you say so" />
-      {ranked.length === 0 ? (
-        <EmptyState title="No subjects to study yet" text="Add your exams, then pick one here to time a session against it." onAdd={onAdd} onImport={onImport} />
-      ) : (
-        <>
-          <SectionLabel>What are you studying?</SectionLabel>
-          <CardGrid>
-            {ranked.map((s, i) => (
-              <Tap
-                key={s.id}
-                className="card focus-ring"
-                onClick={() => onPick(s.id)}
-                style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12, background: CARD_BG, border: `1px solid ${C.line}`, borderRadius: 18, padding: "16px 18px", color: C.text, animation: `rise .5s ${EASE} ${0.04 * i}s both` }}
-              >
-                <span style={{ flex: 1, minWidth: 0 }}>
-                  <SubjectName s={s} />
-                  <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 3 }}>
-                    exam {fmtDate(s.date)}{s.perDay != null && s.needed > 0 ? ` · needs ${fmtH(s.perDay)} a day` : ""}
-                  </span>
-                </span>
-                <span aria-hidden="true" style={{ color: C.dim, fontSize: 18 }}>›</span>
-              </Tap>
-            ))}
-          </CardGrid>
-        </>
-      )}
+      <EmptyState title="No subjects to study yet" text="Add your exams, then pick one on the timer to time a session against it." onAdd={onAdd} onImport={onImport} />
     </div>
   );
 }
 
-/* --------------------------- SUBJECTS --------------------------- *//* --------------------------- SUBJECTS --------------------------- */
+/* --------------------------- SUBJECTS --------------------------- */
 const dateChip = {
   display: "inline-block", fontSize: 12.5, fontWeight: 650, color: C.text, lineHeight: 1.3,
   background: C.raised, border: `1px solid ${C.lineHi}`, borderRadius: 99, padding: "2px 9px",

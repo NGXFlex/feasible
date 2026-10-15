@@ -5,6 +5,7 @@ import {
   minutesSpent, clock, breakFor, cycleSlot, CYCLE,
 } from "./engine/timer.js";
 import { fmtH, fmtMinutes } from "./engine/format.js";
+import { toDate } from "./engine/plan.js";
 
 /* ------------------------------------------------------------------ */
 /*  Study timer. It exists to measure real study time so the hours      */
@@ -42,6 +43,26 @@ const nextSession = (p) =>
 
 const chapterName = (s, i) => s.names?.[i] || `Chapter ${i + 1}`;
 
+/* the subject being studied: every subject with an exam still ahead.
+   Two with the same name are told apart by their exam date. */
+function SubjectSelect({ subjects, value, onChange, id, label = "Subject" }) {
+  const shortDate = (d) => toDate(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+  return (
+    <>
+      <label style={{ fontSize: 13, color: C.dim, marginBottom: 8, display: "block" }} htmlFor={id}>{label}</label>
+      <select
+        id={id}
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        style={{ ...inputStyle, appearance: "auto", marginBottom: 16, color: value ? C.text : C.dim }}
+      >
+        <option value="" disabled>Choose a subject</option>
+        {subjects.map((x) => <option key={x.id} value={x.id}>{x.name}{x.sameName ? ` (exam ${shortDate(x.date)})` : ""}</option>)}
+      </select>
+    </>
+  );
+}
+
 /* the chapter being studied: open chapters, plus the one already picked */
 function ChapterSelect({ s, value, onChange, id, label, style }) {
   const open = s.done.map((d, i) => (d && i !== value ? null : i)).filter((i) => i != null);
@@ -76,7 +97,8 @@ function CycleNote({ rounds, style }) {
   );
 }
 
-export default function Timer({ s, session, setSession, onLog, onClose }) {
+export default function Timer({ subjects, session, setSession, onLog, onClose }) {
+  const s = subjects.find((x) => x.id === session.subjectId) ?? null;
   const desktop = useIsDesktop();
   const [now, setNow] = useState(Date.now());
 
@@ -115,7 +137,7 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
     </Tap>
   );
 
-  if (!s) {
+  if (!s && phase === "after") {
     return (
       <div style={wrap}>
         {back}
@@ -125,13 +147,30 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
     );
   }
 
+  /* changing the subject clears the chapter: chapters belong to a subject.
+     "before" follows it, so "down from" compares the same subject. */
+  const subjectPick = (id, label) => (
+    <SubjectSelect subjects={subjects} id={id} label={label} value={s ? session.subjectId : null}
+      onChange={(subjectId) => set({ subjectId, chapter: null, markDone: false, ...(phase === "confirm" ? { before: subjects.find((x) => x.id === subjectId)?.perDay ?? null } : {}) })} />
+  );
+  const chapterPick = (id, label, style) => (s ? (
+    <ChapterSelect s={s} id={id} label={label} value={session.chapter} onChange={(chapter) => set({ chapter, markDone: false })} style={style} />
+  ) : (
+    <>
+      <label style={{ fontSize: 13, color: C.dim, marginBottom: 8, display: "block" }} htmlFor={id}>{label}</label>
+      <select id={id} disabled value="" style={{ ...inputStyle, appearance: "auto", color: C.dim, ...style }}>
+        <option value="">Choose a subject first</option>
+      </select>
+    </>
+  ));
+
   const heading = (
     <div style={{ textAlign: "center", marginBottom: 28 }}>
       <div style={{ fontSize: 13, color: C.dim, fontWeight: 600, letterSpacing: ".06em", textTransform: "uppercase" }}>
         {phase === "break" ? "Break" : "Studying"}
       </div>
-      <h1 style={{ fontSize: 30, fontWeight: 700, letterSpacing: -0.8, margin: "6px 0 0", overflowWrap: "anywhere" }}>{s.name}</h1>
-      {session.chapter != null && phase !== "break" && (
+      <h1 style={{ fontSize: 30, fontWeight: 700, letterSpacing: -0.8, margin: "6px 0 0", overflowWrap: "anywhere", color: s ? C.text : C.dim }}>{s ? s.name : "Pick a subject"}</h1>
+      {s && session.chapter != null && phase !== "break" && (
         <div style={{ fontSize: 15, color: C.dim, marginTop: 4, overflowWrap: "anywhere" }}>{chapterName(s, session.chapter)}</div>
       )}
     </div>
@@ -170,13 +209,14 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
           </div>
         )}
 
-        <ChapterSelect s={s} id="session-chapter" label="Chapter (optional)" value={session.chapter} onChange={(chapter) => set({ chapter })} style={{ marginBottom: 24 }} />
+        {subjectPick("session-subject")}
+        {chapterPick("session-chapter", "Chapter (optional)", { marginBottom: 24 })}
 
-        <Tap className="focus-ring" disabled={!valid} onClick={() => set({ phase: "run", timer: startTimer(minutes, Date.now()), note: null })} style={primary}>
+        <Tap className="focus-ring" disabled={!valid || !s} onClick={() => set({ phase: "run", timer: startTimer(minutes, Date.now()), note: null })} style={primary}>
           Start
         </Tap>
         <div style={{ fontSize: 12.5, color: C.dim, textAlign: "center", marginTop: 12, lineHeight: 1.5 }}>
-          When the session ends, you'll be asked before any time is added to {s.name}.
+          {s ? `When the session ends, you'll be asked before any time is added to ${s.name}.` : "Choose the subject you're studying to start."}
         </div>
       </div>
     );
@@ -205,7 +245,7 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
             className="focus-ring"
             onClick={() => {
               const t = Date.now();
-              set({ phase: "confirm", timer: pauseTimer(timer, t), spent: minutesSpent(timer, t), completed: false, before: s.perDay ?? null });
+              set({ phase: "confirm", timer: pauseTimer(timer, t), spent: minutesSpent(timer, t), completed: false, before: s?.perDay ?? null });
             }}
             style={{ ...secondary, flex: 1 }}
           >
@@ -213,7 +253,9 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
           </Tap>
         </div>
         <div style={{ marginTop: 28 }}>
-          <ChapterSelect s={s} id="run-chapter" label="Studying a different chapter now? Change it here." value={session.chapter} onChange={(chapter) => set({ chapter, markDone: false })} />
+          <div style={{ fontSize: 13, color: C.dim, marginBottom: 12 }}>Moved on to something else? Change it here.</div>
+          {subjectPick("run-subject")}
+          {chapterPick("run-chapter", "Chapter (optional)")}
         </div>
         <CycleNote rounds={session.rounds} style={{ marginTop: 22 }} />
       </div>
@@ -224,7 +266,7 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
   if (phase === "confirm") {
     const spent = session.spent;
     const ch = session.chapter;
-    const canMark = ch != null && !s.done[ch];
+    const canMark = !!s && ch != null && !s.done[ch];
     if (spent < 1) {
       return (
         <div style={wrap}>
@@ -241,13 +283,14 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
       <div style={wrap}>
         {heading}
         <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.5, textAlign: "center", lineHeight: 1.3 }}>
-          Add {fmtMinutes(spent)} to {s.name}?
+          {s ? `Add ${fmtMinutes(spent)} to ${s.name}?` : `Which subject gets these ${fmtMinutes(spent)}?`}
         </div>
         <div style={{ fontSize: 14, color: C.dim, textAlign: "center", marginTop: 8, lineHeight: 1.5 }}>
           {session.completed ? "Session finished." : `You stopped after ${fmtMinutes(spent)}. Only the time you spent is added.`}
         </div>
         <div style={{ marginTop: 24 }}>
-          <ChapterSelect s={s} id="confirm-chapter" label="Chapter you studied" value={ch} onChange={(chapter) => set({ chapter, markDone: false })} />
+          {subjectPick("confirm-subject", "Subject you studied")}
+          {chapterPick("confirm-chapter", "Chapter you studied")}
         </div>
         {canMark && (
           <Tap
@@ -265,6 +308,7 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
         )}
         <Tap
           className="focus-ring"
+          disabled={!s}
           onClick={() => { onLog(spent, canMark && session.markDone ? ch : null); set({ phase: "after", added: true }); }}
           style={{ ...primary, marginTop: 24 }}
         >
