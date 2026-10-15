@@ -50,10 +50,13 @@ function check(name, subjects, time = TIME) {
   assert.ok(Math.abs(positive - plan.spare) < 1e-6, msg(`positive gaps ${positive} vs spare ${plan.spare}`));
 
   for (const s of list) {
-    // 3. phase hours add up to the hours given
+    // 3. phase hours add up to the hours scheduled, never more than it still needs;
+    //    its hours to have are shared by its work before logging
     const ph = sum(s.phases.map((p) => p.hours));
-    assert.ok(Math.abs(ph - s.allocated) < EPS, msg(`${s.name} phases ${ph} vs allocated ${s.allocated}`));
-    assert.ok(s.allocated <= s.needed + EPS, msg(`${s.name} given more than it needs`));
+    assert.ok(Math.abs(ph - s.scheduled) < EPS, msg(`${s.name} phases ${ph} vs scheduled ${s.scheduled}`));
+    assert.ok(s.scheduled <= s.needed + EPS, msg(`${s.name} scheduled more than it needs`));
+    assert.ok(s.allocated <= s.raw + EPS, msg(`${s.name} given more than its work`));
+    assert.ok(Math.abs(s.allocated + s.recovered + s.spareShare - s.available) < EPS, msg(`${s.name} available adds up`));
     // every hour given lands before its exam
     for (const d of s.days) assert.ok(startOfDay(d.d) < startOfDay(s.date), msg(`${s.name} studied on/after exam day`));
     // nothing shown is NaN or infinite

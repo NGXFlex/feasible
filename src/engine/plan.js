@@ -156,11 +156,16 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
 
   /* ---- 2. day-by-day simulation (schedule.js) ---- */
   const hoursOn = (d) => hoursOnDay(d, wd, we, ov);
+  // the schedule (what to study which day) works from what's still needed
   const sim = shareDays(base.map((b) => ({ need: b.need, date: startOfDay(b.s.date) })), hoursOn, today);
+  // the hours each subject has are shared by its work before any hours
+  // logged come off: logging lowers what a subject needs, never what it has
+  const budget = shareDays(base.map((b) => ({ need: b.raw, date: startOfDay(b.s.date) })), hoursOn, today);
 
   /* ---- 3. per-subject results ---- */
   const results = base.map((b, i) => {
-    const { days, allocated, available, recovered, spare: spareShare } = sim.subjects[i];
+    const { days, allocated: scheduled } = sim.subjects[i];
+    const { allocated, available, recovered, spare: spareShare } = budget.subjects[i];
     // the subject's window is every study day from today to its exam,
     // whether or not it still needs any of them
     const studyDays = studyDaysBetween(today, b.s.date, wd, we, ov);
@@ -168,7 +173,7 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
     const windowStart = first ?? startOfDay(today);
     const windowEnd = last ?? startOfDay(b.s.date);
 
-    const phases = splitPhases(days, allocated, b.meta.phases);
+    const phases = splitPhases(days, scheduled, b.meta.phases);
     const priority = [...b.outstanding].sort((x, y) => y.d - x.d || x.i - y.i).slice(0, 3);
 
     const startAnchor = startOfDay(b.s.createdAt ?? today);
@@ -191,7 +196,7 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
       // a phase with no days only matters while there's work left
       squeezed: b.need > 0 ? phases.filter((x) => x.days === 0).length : 0,
       gap: available - b.need,
-      totalSpare: sim.spare,
+      scheduled,
       expected, behind: Math.max(0, expected - b.doneCount),
       factor: b.factor, costs: b.costs, syl: b.syl, marks: b.marks, marksLeft: b.marksLeft, pm: b.pm,
       chapterMarks: b.chapterMarks,
@@ -201,7 +206,10 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
     };
   });
 
-  return { subjects: results, passed, spare: sim.spare, capacity: sim.capacity };
+  // spare: every subject's hours beyond what it needs, each hour counted once
+  const spare = results.reduce((t, r) => t + Math.max(0, r.gap), 0);
+  for (const r of results) r.totalSpare = spare;
+  return { subjects: results, passed, spare, capacity: sim.capacity };
 }
 
 /* ------------------------------- priority -------------------------------
@@ -265,11 +273,36 @@ export function todayPlan(subjects, time, today = new Date()) {
     return { id: s.id, name: s.name, date: s.date, sameName: s.sameName, planned, done, left: Math.max(0, planned - done) };
   });
   const sum = (k) => rows.reduce((t, r) => t + r[k], 0);
+  const planned = sum("planned"), left = sum("left");
   return {
-    planned: sum("planned"), done: sum("done"), left: sum("left"),
+    planned, done: sum("done"), left,
+    // how much of today's plan is covered: hours past a subject's share
+    // don't count towards another's, so this matches "left" and stops at 1
+    progress: planned > 1e-6 ? Math.min(1, Math.max(0, (planned - left) / planned)) : 1,
+    met: planned > 1e-6 && left <= 1e-6,
     capacity: hoursOnDay(today, time.wd, time.we, time.ov ?? {}),
     rows,
   };
+}
+
+/* The next few days from the day-by-day plan: each day's study time and
+   how it's shared out, biggest share first. "subjects" are analysePlan's. */
+export function upcomingDays(subjects, time, today = new Date(), n = 3) {
+  return Array.from({ length: n }, (_, i) => {
+    const d = addDays(today, i + 1);
+    const t = d.getTime();
+    const rows = subjects
+      .map((s) => ({ id: s.id, name: s.name, h: s.days.filter((x) => startOfDay(x.d).getTime() === t).reduce((a, x) => a + x.h, 0) }))
+      .filter((r) => r.h > 1e-6)
+      .sort((a, b) => b.h - a.h);
+    return {
+      date: d,
+      capacity: hoursOnDay(d, time.wd, time.we, time.ov ?? {}),
+      planned: rows.reduce((a, r) => a + r.h, 0),
+      exams: subjects.filter((s) => key(s.date) === key(d)).map((s) => s.name),
+      rows,
+    };
+  });
 }
 
 /* Learn / Practice / Revise: the hours a subject is given, split by its

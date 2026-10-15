@@ -37,3 +37,13 @@ export function clock(ms) {
 
 /* a short break after a short session, a longer one after a long session */
 export const breakMinutes = (sessionMinutes) => (sessionMinutes > 30 ? 10 : 5);
+
+/* Pomodoro: every fourth finished session earns a long break.
+   completed = finished work sessions so far, this one included. */
+export const CYCLE = 4;
+export const breakFor = (sessionMinutes, completed) =>
+  completed > 0 && completed % CYCLE === 0
+    ? { minutes: sessionMinutes > 30 ? 20 : 15, long: true }
+    : { minutes: breakMinutes(sessionMinutes), long: false };
+/* which session of the cycle comes next: 1..CYCLE */
+export const cycleSlot = (completed) => (Math.max(0, completed | 0) % CYCLE) + 1;

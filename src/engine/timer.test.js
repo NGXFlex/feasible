@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { startTimer, elapsedMs, remainingMs, isFinished, pauseTimer, resumeTimer, minutesSpent, clock, breakMinutes } from "./timer.js";
+import { startTimer, elapsedMs, remainingMs, isFinished, pauseTimer, resumeTimer, minutesSpent, clock, breakMinutes, breakFor, cycleSlot, CYCLE } from "./timer.js";
 import { fmtH, fmtHours } from "./format.js";
 
 const MIN = 60000;
@@ -53,6 +53,22 @@ test("hours: whole numbers without a decimal, fractions to one place", () => {
   assert.equal(fmtH(12), "12h");
   assert.equal(fmtH(0), "0h");
   assert.equal(fmtH(-0.01), "0h");
+  assert.equal(fmtH(45.7), "46h", "above 10 rounds to a whole number");
+  assert.equal(fmtH(10.4), "10h");
+  assert.equal(fmtH(9.96), "10h");
+  assert.equal(fmtH(9.4), "9.4h");
+  assert.equal(fmtH(-12.6), "-13h");
   assert.equal(fmtH(NaN), "0h");
   assert.equal(fmtHours(2.25), "2.3");
+});
+
+test("pomodoro: short breaks by session length, a long one every fourth session", () => {
+  assert.deepEqual(breakFor(15, 1), { minutes: 5, long: false });
+  assert.deepEqual(breakFor(25, 3), { minutes: 5, long: false });
+  assert.deepEqual(breakFor(50, 2), { minutes: 10, long: false });
+  assert.deepEqual(breakFor(25, 4), { minutes: 15, long: true });
+  assert.deepEqual(breakFor(50, 8), { minutes: 20, long: true });
+  assert.equal(breakFor(25, 5).long, false, "the cycle starts again");
+  assert.deepEqual([0, 1, 2, 3, 4, 5].map(cycleSlot), [1, 2, 3, 4, 1, 2]);
+  assert.equal(CYCLE, 4);
 });

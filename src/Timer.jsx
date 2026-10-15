@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { C, Tap, inputStyle, notice, choice, NumField, useIsDesktop, PAGE_PAD } from "./ui.jsx";
 import {
   PRESETS, DEFAULT_MINUTES, MAX_MINUTES, startTimer, remainingMs, isFinished, pauseTimer, resumeTimer,
-  minutesSpent, clock, breakMinutes,
+  minutesSpent, clock, breakFor, cycleSlot, CYCLE,
 } from "./engine/timer.js";
 import { fmtH, fmtMinutes } from "./engine/format.js";
 
@@ -15,7 +15,9 @@ import { fmtH, fmtMinutes } from "./engine/format.js";
 /*  session (kept by App, saved on this device):                        */
 /*    { subjectId, chapter, minutes, custom, from,                      */
 /*      phase: "setup" | "run" | "confirm" | "after" | "break",          */
-/*      timer, spent, completed, before, added, breakTimer }            */
+/*      timer, spent, completed, before, added, breakTimer,              */
+/*      rounds: finished work sessions this sitting (for the long break),*/
+/*      longBreak }                                                     */
 /* ------------------------------------------------------------------ */
 
 const SESSION_KEY = "feasible-timer-v1";
@@ -33,9 +35,46 @@ export function writeSession(session) {
 export const sessionActive = (session) =>
   !!session && (session.phase === "run" || session.phase === "break" || session.phase === "confirm");
 export const newSession = (subjectId, from) =>
-  ({ subjectId, chapter: null, minutes: DEFAULT_MINUTES, custom: false, from, phase: "setup" });
+  ({ subjectId, chapter: null, minutes: DEFAULT_MINUTES, custom: false, from, phase: "setup", rounds: 0 });
+/* the next work session of the same sitting: same subject, length, chapter and cycle */
+const nextSession = (p) =>
+  ({ ...newSession(p.subjectId, p.from), minutes: p.minutes, custom: p.custom, chapter: p.chapter, rounds: p.rounds ?? 0 });
 
 const chapterName = (s, i) => s.names?.[i] || `Chapter ${i + 1}`;
+
+/* the chapter being studied: open chapters, plus the one already picked */
+function ChapterSelect({ s, value, onChange, id, label, style }) {
+  const open = s.done.map((d, i) => (d && i !== value ? null : i)).filter((i) => i != null);
+  return (
+    <>
+      <label style={{ fontSize: 13, color: C.dim, marginBottom: 8, display: "block" }} htmlFor={id}>{label}</label>
+      <select
+        id={id}
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
+        style={{ ...inputStyle, appearance: "auto", ...style }}
+      >
+        <option value="">No particular chapter</option>
+        {open.map((i) => <option key={i} value={i}>{chapterName(s, i)}</option>)}
+      </select>
+    </>
+  );
+}
+
+/* "Session 2 of 4 before a long break" */
+function CycleNote({ rounds, style }) {
+  const slot = cycleSlot(rounds);
+  return (
+    <div data-cycle={slot} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, fontSize: 13, color: C.dim, ...style }}>
+      <span aria-hidden="true" style={{ display: "flex", gap: 4 }}>
+        {Array.from({ length: CYCLE }, (_, i) => (
+          <span key={i} style={{ width: 7, height: 7, borderRadius: 99, background: i < slot - 1 ? C.accent : i === slot - 1 ? C.accentText : C.line, opacity: i === slot - 1 ? 0.55 : 1 }} />
+        ))}
+      </span>
+      Session {slot} of {CYCLE} before a long break
+    </div>
+  );
+}
 
 export default function Timer({ s, session, setSession, onLog, onClose }) {
   const desktop = useIsDesktop();
@@ -57,7 +96,7 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
   /* the session ran out (maybe while the tab was hidden): ask before logging */
   useEffect(() => {
     if (phase === "run" && timer?.running && isFinished(timer, now)) {
-      set({ phase: "confirm", timer: pauseTimer(timer, now), spent: Math.round(timer.durationMs / 60000), completed: true, before: s?.perDay ?? null });
+      set({ phase: "confirm", timer: pauseTimer(timer, now), spent: Math.round(timer.durationMs / 60000), completed: true, before: s?.perDay ?? null, rounds: (session.rounds ?? 0) + 1 });
     }
     if (phase === "break" && session.breakTimer?.running && isFinished(session.breakTimer, now)) {
       set({ breakTimer: pauseTimer(session.breakTimer, now) });
@@ -100,7 +139,6 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
 
   /* ------------------------------ setup ------------------------------ */
   if (phase === "setup") {
-    const open = s.done.map((d, i) => (d ? null : i)).filter((i) => i != null);
     const minutes = session.minutes;
     const valid = minutes >= 1 && minutes <= MAX_MINUTES;
     return (
@@ -108,7 +146,8 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
         {back}
         {heading}
         {session.note && <div role="status" style={{ textAlign: "center", fontSize: 14, color: C.dim, marginTop: -14, marginBottom: 20 }}>{session.note}</div>}
-        <div role="timer" aria-label={`${fmtMinutes(minutes)} session`} style={{ ...big, color: C.text, marginBottom: 28 }}>{clock(minutes * 60000)}</div>
+        <div role="timer" aria-label={`${fmtMinutes(minutes)} session`} style={{ ...big, color: C.text }}>{clock(minutes * 60000)}</div>
+        <CycleNote rounds={session.rounds} style={{ marginTop: 14, marginBottom: 28 }} />
 
         <span style={lbl}>How long</span>
         <div role="group" aria-label="Session length" style={{ display: "flex", gap: 8, marginBottom: session.custom ? 10 : 20 }}>
@@ -131,16 +170,7 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
           </div>
         )}
 
-        <label style={lbl} htmlFor="session-chapter">Chapter (optional)</label>
-        <select
-          id="session-chapter"
-          value={session.chapter ?? ""}
-          onChange={(e) => set({ chapter: e.target.value === "" ? null : Number(e.target.value) })}
-          style={{ ...inputStyle, marginBottom: 24, appearance: "auto" }}
-        >
-          <option value="">No particular chapter</option>
-          {open.map((i) => <option key={i} value={i}>{chapterName(s, i)}</option>)}
-        </select>
+        <ChapterSelect s={s} id="session-chapter" label="Chapter (optional)" value={session.chapter} onChange={(chapter) => set({ chapter })} style={{ marginBottom: 24 }} />
 
         <Tap className="focus-ring" disabled={!valid} onClick={() => set({ phase: "run", timer: startTimer(minutes, Date.now()), note: null })} style={primary}>
           Start
@@ -182,6 +212,10 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
             Stop
           </Tap>
         </div>
+        <div style={{ marginTop: 28 }}>
+          <ChapterSelect s={s} id="run-chapter" label="Studying a different chapter now? Change it here." value={session.chapter} onChange={(chapter) => set({ chapter, markDone: false })} />
+        </div>
+        <CycleNote rounds={session.rounds} style={{ marginTop: 22 }} />
       </div>
     );
   }
@@ -196,7 +230,7 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
         <div style={wrap}>
           {heading}
           <div style={{ fontSize: 20, fontWeight: 650, textAlign: "center" }}>Less than a minute — nothing to add.</div>
-          <Tap className="focus-ring" onClick={() => set({ ...newSession(session.subjectId, session.from), chapter: ch, minutes: session.minutes, custom: session.custom })} style={{ ...primary, marginTop: 28 }}>
+          <Tap className="focus-ring" onClick={() => set(nextSession(session))} style={{ ...primary, marginTop: 28 }}>
             Start again
           </Tap>
           <Tap className="focus-ring" onClick={() => { setSession(null); onClose(); }} style={{ ...secondary, marginTop: 10 }}>Done</Tap>
@@ -212,13 +246,16 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
         <div style={{ fontSize: 14, color: C.dim, textAlign: "center", marginTop: 8, lineHeight: 1.5 }}>
           {session.completed ? "Session finished." : `You stopped after ${fmtMinutes(spent)}. Only the time you spent is added.`}
         </div>
+        <div style={{ marginTop: 24 }}>
+          <ChapterSelect s={s} id="confirm-chapter" label="Chapter you studied" value={ch} onChange={(chapter) => set({ chapter, markDone: false })} />
+        </div>
         {canMark && (
           <Tap
             role="checkbox"
             aria-checked={!!session.markDone}
             className="focus-ring"
             onClick={() => set({ markDone: !session.markDone })}
-            style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12, marginTop: 24, background: C.surface, border: `1px solid ${session.markDone ? C.accent : C.line}`, borderRadius: 14, padding: "14px 16px", color: C.text }}
+            style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12, marginTop: 12, background: C.surface, border: `1px solid ${session.markDone ? C.accent : C.line}`, borderRadius: 14, padding: "14px 16px", color: C.text }}
           >
             <span aria-hidden="true" style={{ width: 22, height: 22, borderRadius: 7, flexShrink: 0, border: `1.5px solid ${session.markDone ? C.accent : C.lineHi}`, background: session.markDone ? C.accent : "transparent", color: C.onAccent, fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>
               {session.markDone ? "✓" : ""}
@@ -250,8 +287,8 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
       else if (after != null && fmtH(after) !== fmtH(before)) moved = `${s.name} now needs ${fmtH(after)} a day, down from ${fmtH(before)}.`;
       else if (after != null) moved = `${s.name} still needs about ${fmtH(after)} a day.`;
     }
-    const rest = breakMinutes(Math.round((timer?.durationMs ?? 0) / 60000));
-    const again = () => set({ ...newSession(session.subjectId, session.from), minutes: session.minutes, custom: session.custom });
+    const rest = breakFor(Math.round((timer?.durationMs ?? 0) / 60000), session.rounds ?? 0);
+    const again = () => set(nextSession(session));
     return (
       <div style={wrap}>
         {heading}
@@ -262,18 +299,23 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
 
         {session.completed && (
           <div style={{ background: C.surface, border: `1px solid ${C.line}`, borderRadius: 16, padding: "16px 18px", marginTop: 28 }}>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>A {rest}-minute break is a good idea now.</div>
+            <div style={{ fontSize: 15, fontWeight: 600 }}>
+              {rest.long
+                ? `That's ${CYCLE} sessions. Time for a long break: ${rest.minutes} minutes.`
+                : `A ${rest.minutes}-minute break is a good idea now.`}
+            </div>
             <Tap
               className="focus-ring"
-              onClick={() => set({ phase: "break", breakTimer: startTimer(rest, Date.now()) })}
-              style={{ ...secondary, marginTop: 12, padding: "12px 0" }}
+              onClick={() => set({ phase: "break", breakTimer: startTimer(rest.minutes, Date.now()), longBreak: rest.long })}
+              style={{ ...primary, marginTop: 12, padding: "13px 0", fontSize: 15.5 }}
             >
-              Start a {rest}-minute break
+              Start a {rest.minutes}-minute break
             </Tap>
           </div>
         )}
 
-        <Tap className="focus-ring" onClick={again} style={{ ...primary, marginTop: 24 }}>Start another session</Tap>
+        <CycleNote rounds={session.rounds} style={{ marginTop: 20 }} />
+        <Tap className="focus-ring" onClick={again} style={{ ...(session.completed ? secondary : primary), marginTop: 20 }}>{session.completed ? "Skip the break" : "Start another session"}</Tap>
         <Tap className="focus-ring" onClick={() => { setSession(null); onClose(); }} style={{ ...secondary, marginTop: 10 }}>Done</Tap>
       </div>
     );
@@ -287,11 +329,15 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
     <div style={wrap}>
       {heading}
       <div role="timer" aria-label={`${clock(left)} of break left`} style={{ ...big, color: over ? C.dim : C.info }}>{clock(left)}</div>
-      <div style={{ textAlign: "center", fontSize: 15, color: C.dim, marginTop: 12, marginBottom: 32 }}>
-        {over ? "Break's over." : "Nothing is logged for a break."}
+      <div role="status" style={{ textAlign: "center", fontSize: 15, color: C.dim, marginTop: 12, marginBottom: 20 }}>
+        {over ? `Break's over. Ready for session ${cycleSlot(session.rounds)}?` : `${session.longBreak ? "Long break" : "Break"} — nothing is logged for a break.`}
       </div>
-      <Tap className="focus-ring" onClick={() => set({ ...newSession(session.subjectId, session.from), minutes: session.minutes, custom: session.custom })} style={primary}>
-        {over ? "Start another session" : "End break and start another session"}
+      <CycleNote rounds={session.rounds} style={{ marginBottom: 24 }} />
+      <Tap className="focus-ring" onClick={() => set({ ...nextSession(session), phase: "run", timer: startTimer(session.minutes, Date.now()) })} style={primary}>
+        {over ? `Start the next ${fmtMinutes(session.minutes)}` : `End the break and start the next ${fmtMinutes(session.minutes)}`}
+      </Tap>
+      <Tap className="focus-ring" onClick={() => set(nextSession(session))} style={{ ...secondary, marginTop: 10 }}>
+        Change length or chapter first
       </Tap>
       <Tap className="focus-ring" onClick={() => { setSession(null); onClose(); }} style={{ ...secondary, marginTop: 10 }}>Done</Tap>
     </div>

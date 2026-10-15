@@ -13,7 +13,7 @@ import { SYLLABI, getSyllabus, readinessFactor, dailyNeed, planForTarget, exerci
 import { parsePortions, WEIGHTS, DEFAULT_WEIGHT } from "./engine/portions.js";
 import {
   TYPE_META, PACE, paceMult, DIFF_MULT, diffMult, toDate, addDays, key, daysUntil,
-  defaultHours, hoursBetween, analysePlan, todayPlan, rankByUrgency, urgencyOf,
+  defaultHours, hoursBetween, analysePlan, todayPlan, upcomingDays, rankByUrgency, urgencyOf,
   verdictOf, riskOrder, shortfallAction,
 } from "./engine/plan.js";
 import { migrateLog, setLoggedTotal, addLog } from "./engine/log.js";
@@ -520,6 +520,7 @@ export default function App() {
   const passed = plan.passed;
 
   const day = useMemo(() => todayPlan(subjects, { wd, we, ov, pace }), [subjects, wd, we, ov, pace]);
+  const upcoming = useMemo(() => upcomingDays(analysis, { wd, we, ov }), [analysis, wd, we, ov]);
   const emptyActions = { onAdd: () => setSheet({ mode: "add" }), onImport: () => go("import") };
 
   const worst = analysis.reduce((a, b) => (b.gap < (a?.gap ?? Infinity) ? b : a), null);
@@ -659,7 +660,7 @@ export default function App() {
         )}
         {screen === "today" && (
           <Today
-            day={day} data={analysis} passed={passed}
+            day={day} upcoming={upcoming} data={analysis} passed={passed}
             session={sessionActive(session) ? session : null}
             onStart={(id) => openTimer(id, "today")}
             onResume={() => go("timer")}
@@ -690,7 +691,7 @@ export default function App() {
           />
         )}
         {screen === "reality" && (
-          <Reality data={analysis} passed={passed} passedActions={passedActions} totalShort={totalShort} totalSpare={totalSpare} todayHours={day.capacity} {...emptyActions}
+          <Reality data={analysis} passed={passed} passedActions={passedActions} totalShort={totalShort} totalSpare={totalSpare} today={day} {...emptyActions}
             onOpen={(id) => { setOpenId(id); go("detail"); }}
             onTime={() => openFrom("time", "reality")}
             onSetLog={(id, v) => {
@@ -1394,7 +1395,7 @@ function Subjects({ data, passed, passedActions, onOpen, onAdd, onImport, onSamp
         </div>
       )}
       {data.length > 0 && <SectionLabel>Exams</SectionLabel>}
-      <div style={{ display: "grid", gridTemplateColumns: desktop ? "repeat(auto-fill, minmax(250px, 1fr))" : "minmax(0, 1fr)", gap: desktop ? 16 : 10 }}>
+      <CardGrid>
         {data.map((s, i) => {
           const isShort = s.gap < -0.5;
           const chPct = s.chapters ? (s.doneCount / s.chapters) * 100 : 0;
@@ -1427,7 +1428,7 @@ function Subjects({ data, passed, passedActions, onOpen, onAdd, onImport, onSamp
             </Tap>
           );
         })}
-      </div>
+      </CardGrid>
       <PassedList passed={passed} {...passedActions} />
       {(data.length > 0 || passed.length > 0) && (
         <>
@@ -1514,18 +1515,20 @@ const miniBar = (pct, color = C.accent) => (
   </div>
 );
 
-function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, onPlan, onReality, shortH, spareH, onAdd, onImport }) {
+function Today({ day, upcoming, data, passed, session, onStart, onResume, onOpen, onTime, onPlan, onReality, shortH, spareH, onAdd, onImport }) {
   const desktop = useIsDesktop();
   const next = day.rows.find((r) => r.left > 1e-6);
   const listed = day.rows.filter((r) => r.planned > 1e-6 || r.done > 1e-6);
   const resting = day.rows.filter((r) => r.planned <= 1e-6 && r.done <= 1e-6);
   const count = day.rows.filter((r) => r.left > 1e-6).length;
   const n = useCountUp(day.left);
+  // done for today: the plan is covered, or nothing was needed and time was logged anyway
+  const complete = day.met || (day.planned <= 1e-6 && day.done > 1e-6);
   const now = new Date();
   const byId = Object.fromEntries(data.map((x) => [x.id, x]));
   const soonest = data.reduce((a, b) => (!a || toDate(b.date) < toDate(a.date) ? b : a), null);
   const soonDays = soonest ? daysUntil(soonest.date) : null;
-  const donePct = day.planned > 1e-6 ? (day.done / day.planned) * 100 : day.left <= 1e-6 ? 100 : 0;
+  const donePct = day.progress * 100;
   const isShort = shortH > 0.5;
 
   const line = { fontSize: 15, fontWeight: 500, marginTop: 10, lineHeight: 1.45 };
@@ -1557,10 +1560,18 @@ function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, 
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={tileLabel}>Today</div>
-                  <div style={{ ...bigNum(desktop ? 64 : 50), marginTop: 6, color: day.left > 1e-6 ? C.text : C.fits }} aria-label={`${fmtH(day.left)} to study today`}>{fmtH(n)}</div>
+                  {complete ? (
+                    <div style={{ ...bigNum(desktop ? 64 : 50), marginTop: 6, color: C.fits }}>Done</div>
+                  ) : (
+                    <div style={{ ...bigNum(desktop ? 64 : 50), marginTop: 6 }} aria-label={`${fmtH(day.left)} to study today`}>{fmtH(n)}</div>
+                  )}
                 </div>
-                <Ring pct={donePct} size={desktop ? 96 : 74} stroke={desktop ? 8 : 7} color={day.left > 1e-6 ? C.accent : C.fits}>
-                  <span style={{ display: "block" }}>{Math.round(donePct)}%<span style={{ display: "block", fontFamily: FONT, fontSize: desktop ? 10.5 : 9.5, fontWeight: 550, color: C.dim, letterSpacing: 0, marginTop: 2 }}>done</span></span>
+                <Ring pct={donePct} size={desktop ? 96 : 74} stroke={desktop ? 8 : 7} color={complete || day.left <= 1e-6 ? C.fits : C.accent}>
+                  {complete ? (
+                    <span style={{ display: "block", fontSize: desktop ? 17 : 15 }}>Done</span>
+                  ) : (
+                    <span style={{ display: "block" }}>{Math.round(donePct)}%<span style={{ display: "block", fontFamily: FONT, fontSize: desktop ? 10.5 : 9.5, fontWeight: 550, color: C.dim, letterSpacing: 0, marginTop: 2 }}>done</span></span>
+                  )}
                 </Ring>
               </div>
               {day.capacity <= 0 ? (
@@ -1574,18 +1585,23 @@ function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, 
                 </>
               ) : day.planned <= 1e-6 ? (
                 <>
-                  <div style={line}>Nothing needed today.</div>
+                  <div style={line}>{day.done > 1e-6 ? `${fmtH(day.done)} logged today.` : "Nothing needed today."}</div>
                   <div style={sub}>Every subject is covered by the hours you've already put in.</div>
                 </>
-              ) : day.left <= 1e-6 ? (
+              ) : complete ? (
                 <>
-                  <div style={line}>Today's hours are done.</div>
-                  <div style={sub}>{fmtH(day.done)} logged today, against {fmtH(day.planned)} planned.</div>
+                  <div style={line}>{fmtH(day.done)} logged today.</div>
+                  <div style={sub}>Today's plan was {fmtH(day.planned)}, so it's covered.</div>
                 </>
               ) : (
                 <>
-                  <div style={line}>to study today{count > 1 ? `, across ${count} subjects` : ""}.</div>
-                  {day.done > 1e-6 && <div style={sub}>{fmtH(day.done)} logged so far, of {fmtH(day.planned)} planned.</div>}
+                  <div style={line}>left to study today{count > 1 ? `, across ${count} subjects` : ""}, of {fmtH(day.planned)} planned.</div>
+                  {day.done > 1e-6 && (
+                    <div style={sub}>
+                      {fmtH(day.done)} logged so far.
+                      {day.done > day.planned - day.left + 0.05 && " Time past one subject's share doesn't count towards another's."}
+                    </div>
+                  )}
                 </>
               )}
               <div style={{ flex: 1 }} />
@@ -1674,9 +1690,15 @@ function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, 
               Nothing needed today for {resting.map((r) => r.name).join(", ")}.
             </div>
           )}
-          <div style={{ fontSize: 12.5, color: C.dim, marginTop: 14, lineHeight: 1.55 }}>
-            From the day-by-day plan: today's {fmtH(day.capacity)} are shared between your subjects by how much each needs per day before its exam.
-          </div>
+          <NextDays days={upcoming} desktop={desktop} onOpen={onOpen} />
+
+          {day.capacity > 0 && (
+            <div style={{ fontSize: 12.5, color: C.dim, marginTop: 14, lineHeight: 1.55 }}>
+              From the day-by-day plan: {day.planned < day.capacity - 0.05
+                ? <>you have {fmtH(day.capacity)} of study time today and your subjects need {fmtH(day.planned)} of it, shared by how much each needs per day before its exam.</>
+                : <>today's {fmtH(day.capacity)} are shared between your subjects by how much each needs per day before its exam.</>}
+            </div>
+          )}
           <Tap
             className="focus-ring"
             onClick={onPlan}
@@ -1687,6 +1709,48 @@ function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, 
         </>
       )}
     </div>
+  );
+}
+
+/* The next three days at a glance, from the same day-by-day plan */
+function NextDays({ days, desktop, onOpen }) {
+  if (!days?.length) return null;
+  return (
+    <>
+      <SectionLabel style={{ marginTop: SP.section }}>Next 3 days</SectionLabel>
+      <CardGrid>
+        {days.map((d, i) => {
+          const max = Math.max(...d.rows.map((r) => r.h), 1e-6);
+          return (
+            <div key={key(d.date)} className="card" data-day={key(d.date)} style={{ ...tile(desktop), display: "flex", flexDirection: "column", animation: `rise .5s ${EASE} ${0.3 + 0.05 * i}s both` }}>
+              <span style={tileLabel}>{i === 0 ? "Tomorrow" : d.date.toLocaleDateString("en-IN", { weekday: "long" })} · {fmtDate(d.date)}</span>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 8 }}>
+                <span style={bigNum(desktop ? 30 : 26)}>{fmtH(d.planned)}</span>
+                <span style={{ fontSize: 12.5, color: C.dim }}>{d.capacity > 0 ? `of ${fmtH(d.capacity)} free` : "no study time set"}</span>
+              </div>
+              {d.exams.length > 0 && (
+                <div style={{ fontSize: 12.5, fontWeight: 650, color: C.accentText, marginTop: 6 }}>Exam: {d.exams.join(", ")}</div>
+              )}
+              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 9 }}>
+                {d.rows.length === 0 && <div style={{ fontSize: 13, color: C.dim }}>{d.capacity > 0 ? "Nothing needed." : "A day off."}</div>}
+                {d.rows.map((r) => (
+                  <Tap key={r.id} className="focus-ring" onClick={() => onOpen(r.id)} aria-label={`${r.name}: ${fmtH(r.h)}`}
+                    style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", color: C.text, padding: 0 }}>
+                    <span style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 13.5 }}>
+                      <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
+                      <span style={{ flexShrink: 0, color: C.dim, fontVariantNumeric: "tabular-nums" }}>{fmtH(r.h)}</span>
+                    </span>
+                    <span aria-hidden="true" style={{ display: "block", height: 5, marginTop: 5, borderRadius: 99, background: C.raised }}>
+                      <span style={{ display: "block", height: "100%", width: `${(r.h / max) * 100}%`, borderRadius: 99, background: C.accent, opacity: 0.8 }} />
+                    </span>
+                  </Tap>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </CardGrid>
+    </>
   );
 }
 
@@ -1701,13 +1765,15 @@ function verdictText(s, v) {
 }
 
 /* The arithmetic behind one subject's two bars, with its own numbers */
-function HowWorkedOut({ s, todayHours }) {
+function HowWorkedOut({ s, today }) {
   const [open, setOpen] = useState(false);
   const f = s.factor.factor;
   const base = s.remaining ? s.raw / (f * s.pm) : 0;
   const each = s.remaining ? base / s.remaining : 0;
   const pace = PACE.find((p) => Math.abs(p.mult - s.pm) < 1e-9)?.label ?? "Steady";
-  const todayShare = s.days?.[0] && key(s.days[0].d) === key(new Date()) ? s.days[0].h : 0;
+  // the same figure the Today screen shows: today's share, fixed for the day
+  const todayShare = today?.rows.find((r) => r.id === s.id)?.planned ?? 0;
+  const todayHours = today?.capacity ?? 0;
   const row = (label, value, opts = {}) => (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, padding: "5px 0", fontWeight: opts.bold ? 650 : 400, color: opts.bold ? C.text : undefined, borderTop: opts.bold ? `1px solid ${C.line}` : "none", marginTop: opts.bold ? 4 : 0, paddingTop: opts.bold ? 8 : 5 }}>
       <span style={{ minWidth: 0 }}>{label}</span>
@@ -1750,8 +1816,9 @@ function HowWorkedOut({ s, todayHours }) {
 
           {head("Hours you'll have before this exam")}
           {note(`${s.studyDays} study day${s.studyDays === 1 ? "" : "s"} from today to the exam on ${fmtDate(s.date)}, holding ${fmtH(s.windowHours)} in all.`)}
-          {note("Every day's hours are shared between the subjects whose exams are still ahead, each in proportion to what it still needs per day. A nearer exam, or more work, pulls harder.")}
-          {row(`Scheduled for this subject${todayShare > 1e-6 ? ` (today: ${fmtH(todayShare)} of ${fmtH(todayHours)})` : ""}`, fmtH(s.allocated))}
+          {note("Every day's hours are shared between the subjects whose exams are still ahead, each in proportion to its work per day, before any hours you've logged come off. A nearer exam, or more work, pulls harder. So logging hours lowers what a subject needs, not what it has.")}
+          {row("Its share of those days", fmtH(s.allocated))}
+          {todayShare > 1e-6 && note(`Today's plan gives it ${fmtH(todayShare)} of your ${fmtH(todayHours)}.`)}
           {s.recovered > 0.05 && row("+ hours its days have left that it can still use", `+${fmtH(s.recovered)}`)}
           {s.spareShare > 0.05 && row("+ its share of hours no subject needed", `+${fmtH(s.spareShare)}`)}
           {row("Hours you'll have before this exam", fmtH(s.available), { bold: true })}
@@ -1764,7 +1831,7 @@ function HowWorkedOut({ s, todayHours }) {
   );
 }
 
-function Reality({ data, passed, passedActions, totalShort, totalSpare, todayHours, onSetLog, onAdd, onImport, onOpen, onTime }) {
+function Reality({ data, passed, passedActions, totalShort, totalSpare, today, onSetLog, onAdd, onImport, onOpen, onTime }) {
   const desktop = useIsDesktop();
   const short = -totalShort;
   const isShort = short > 0.5;
@@ -1823,7 +1890,7 @@ function Reality({ data, passed, passedActions, totalShort, totalSpare, todayHou
           )}
           <div style={{ fontSize: 12.5, color: C.dim, marginTop: 16, lineHeight: 1.5, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
             Every day's hours are shared between the subjects whose exams are still ahead,
-            weighted by how much each one needs. No hour is counted twice.
+            weighted by each one's work. Logging hours lowers what a subject needs, not what it has. No hour is counted twice.
           </div>
         </div>
       )}
@@ -1878,7 +1945,7 @@ function Reality({ data, passed, passedActions, totalShort, totalSpare, todayHou
               <div data-verdict={v.kind} style={{ fontSize: 16, fontWeight: 650, lineHeight: 1.4, color: col, marginTop: 4 }}>
                 {verdictText(s, v)}
               </div>
-              <HowWorkedOut s={s} todayHours={todayHours} />
+              <HowWorkedOut s={s} today={today} />
               <HoursSlider s={s} onCommit={onSetLog} />
             </div>
           );
