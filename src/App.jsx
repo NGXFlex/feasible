@@ -177,16 +177,18 @@ function saveState(obj, onStatus) {
    keep the previous account's plan lying around. */
 function cancelPendingSave() { clearTimeout(saveTimer); }
 
-/* "Continue without an account" is remembered on this device, so the login
-   screen comes first until someone signs in or chooses that once. */
+/* "Continue without an account" lasts for this browser session only, so the
+   login screen is the first thing every new launch shows unless someone is
+   signed in. (sessionStorage survives a reload but not closing the tab.) */
 const GUEST_KEY = "feasible-guest-v1";
+try { localStorage.removeItem(GUEST_KEY); } catch { /* storage blocked */ }  // older builds kept it forever
 function isGuest() {
-  try { return localStorage.getItem(GUEST_KEY) === "1"; } catch (e) { return false; }
+  try { return sessionStorage.getItem(GUEST_KEY) === "1"; } catch (e) { return false; }
 }
 function setGuest(on) {
   try {
-    if (on) localStorage.setItem(GUEST_KEY, "1");
-    else localStorage.removeItem(GUEST_KEY);
+    if (on) sessionStorage.setItem(GUEST_KEY, "1");
+    else sessionStorage.removeItem(GUEST_KEY);
   } catch (e) {}
 }
 function clearLocalCopy() { localSet(null); }
