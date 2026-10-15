@@ -39,6 +39,31 @@ export const PALETTES = [
     light: { bg: "#F6F4FA", surface: "#FFFFFF", raised: "#EEEBF5", line: "#E3DEEE", lineHi: "#C8C0DC", text: "#19161F", dim: "#776E89", accent: "#6246C4", accentSoft: "#EBE5FA" },
     dark: { bg: "#110F17", surface: "#1A1722", raised: "#241F2E", line: "#2F293B", lineHi: "#443B55", text: "#F3F0F8", dim: "#948CA4", accent: "#A28CF5", accentSoft: "#241B3C" },
   },
+  {
+    id: "sage", name: "Sage",
+    light: { bg: "#EEF1EA", surface: "#F9FBF6", raised: "#E3E9DD", line: "#D6DED0", lineHi: "#BCC8B4", text: "#1C231C", dim: "#73806F", accent: "#4F7D5A", accentSoft: "#E1ECDF" },
+    dark: { bg: "#0F1410", surface: "#171D18", raised: "#202821", line: "#2A332B", lineHi: "#3D493E", text: "#EEF2EC", dim: "#8D998B", accent: "#8DC59A", accentSoft: "#1A2A1E" },
+  },
+  {
+    id: "copper", name: "Copper Night",
+    light: { bg: "#F6F1EC", surface: "#FFFCF9", raised: "#EEE5DD", line: "#E3D7CC", lineHi: "#CDBBAB", text: "#231A14", dim: "#86766A", accent: "#B8683C", accentSoft: "#F6E5D9" },
+    dark: { bg: "#141210", surface: "#1D1A17", raised: "#27231F", line: "#332D28", lineHi: "#4A4139", text: "#F0E9E1", dim: "#9A8F84", accent: "#D4875A", accentSoft: "#33231A" },
+  },
+  {
+    id: "mono", name: "Mono Signal",
+    light: { bg: "#FAFAFA", surface: "#FFFFFF", raised: "#F0F0F0", line: "#E4E4E4", lineHi: "#C8C8C8", text: "#111111", dim: "#767676", accent: "#D93349", accentSoft: "#FCE6E9" },
+    dark: { bg: "#0D0D0D", surface: "#171717", raised: "#212121", line: "#2C2C2C", lineHi: "#424242", text: "#F5F5F5", dim: "#9A9A9A", accent: "#FF5A6E", accentSoft: "#33161B" },
+  },
+  {
+    id: "hydra", name: "Hydra",
+    light: { bg: "#F0F6F6", surface: "#FFFFFF", raised: "#E4EEEF", line: "#D5E3E4", lineHi: "#B6CDCF", text: "#102225", dim: "#64807F", accent: "#12838B", accentSoft: "#DDF0F1" },
+    dark: { bg: "#0B1719", surface: "#122326", raised: "#1A2F33", line: "#22393E", lineHi: "#33525A", text: "#E4F1F2", dim: "#7F9A9D", accent: "#3FC1C9", accentSoft: "#0E2D31" },
+  },
+  {
+    id: "aureus", name: "Aureus",
+    light: { bg: "#F7F3EA", surface: "#FFFDF8", raised: "#EEE7D8", line: "#E3DAC6", lineHi: "#CDBF9F", text: "#221C11", dim: "#85796A", accent: "#A87A22", accentSoft: "#F5EAD2" },
+    dark: { bg: "#12100C", surface: "#1B1813", raised: "#25211A", line: "#302A21", lineHi: "#463E30", text: "#F3ECDF", dim: "#9B917F", accent: "#D6A84A", accentSoft: "#2F2614" },
+  },
 ];
 
 /* the same in every palette: the feasibility verdict and information */
@@ -47,7 +72,7 @@ export const SEMANTIC_BASE = {
   dark: { shortfall: "#FF5A4D", fits: "#4ED6A0", info: "#7BA6F5" },
 };
 
-export const DEFAULT_PALETTE = "coral";   // closest to the app's original look
+export const DEFAULT_PALETTE = "sand";    // the redesign's look; a saved choice always wins
 export const paletteById = (id) => PALETTES.find((p) => p.id === id) ?? PALETTES.find((p) => p.id === DEFAULT_PALETTE);
 
 /* ------------------------------ colour maths ------------------------------ */

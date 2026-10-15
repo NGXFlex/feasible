@@ -1,9 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
-  C, FONT, EASE, Tap, inputStyle, useIsDesktop, useSplit, sheetOverlay, sheetPanel, SheetHandle,
-  SIDEBAR_W, CONTENT_MAX, MOBILE_MAX, SP, THEMES, useTheme, Mark, CardGrid, Split, SectionLabel,
-  card, hero, tinted, notice, choice, NumField, useMedia,
+  C, FONT, DISPLAY, EASE, Tap, inputStyle, useIsDesktop, useSplit, sheetOverlay, sheetPanel, SheetHandle,
+  SIDEBAR_W, RAIL_W, PAGE_PAD, CONTENT_MAX, MOBILE_MAX, SP, THEMES, useTheme, Mark, CardGrid, Split, SectionLabel,
+  card, CARD_BG, hero, tinted, notice, choice, NumField, useMedia,
 } from "./ui.jsx";
+import Backdrop from "./Backdrop.jsx";
 import { PALETTES, DEFAULT_PALETTE, paletteById, tokens as paletteTokens } from "./palettes.js";
 import Login from "./Login.jsx";
 import ImportPdf from "./ImportPdf.jsx";
@@ -338,7 +339,7 @@ export default function App() {
   const [openId, setOpenId] = useState(null);
   const [sheet, setSheet] = useState(null); // null | {mode:'add'} | {mode:'edit', subject}
   const [toast, setToast] = useState(null);
-  const [overlay, setOverlay] = useState(false);
+  const [, setOverlay] = useState(false);   // screens still report sheets they open
   const [onboarded, setOnboarded] = useState(false);
   const [sync, setSync] = useState("local");
   const [cloudApi, setCloudApi] = useState(null);   // firebase module, once it loads
@@ -604,36 +605,41 @@ export default function App() {
     }
   `;
 
-  // phone tabs; Plan and Time open from Today and Settings as full screens with a way back
-  const tabbed = ["today", "subjects", "reality", "timer", "settings"].includes(screen);
+  // Plan and Time open from Today and Settings as full screens with a way back on a phone
   const subBack = !desktop && back ? () => go(back, "back") : null;
-  /* Desktop: a sidebar stays on every screen after onboarding and login,
-     and replaces the floating tab bar. Phones keep the tab bar. */
-  const withNav = desktop && ready && screen !== "onboard" && screen !== "login";
-  const showBar = !desktop && tabbed && !overlay && !sheet;
+  /* Navigation stays on every screen after onboarding and login: a labelled
+     sidebar on desktop, a slim rail down the left on a phone. */
+  const navOn = ready && screen !== "onboard" && screen !== "login";
+  const withNav = desktop && navOn;
+  const withRail = !desktop && navOn;
 
   return (
     <div
       className="appmin"
       style={{
-        fontFamily: FONT, background: C.bg, color: C.text,
+        fontFamily: FONT, background: "transparent", color: C.text,
         position: "relative", WebkitFontSmoothing: "antialiased",
-        ...(desktop ? {} : { maxWidth: MOBILE_MAX, margin: "0 auto", overflow: "hidden" }),
+        // each layout's page padding (PAGE_PAD reads these)
+        "--gutter": desktop ? "32px" : withRail ? "16px" : "24px",
+        "--page-top": desktop ? "48px" : "28px",
+        ...(desktop ? {} : { maxWidth: MOBILE_MAX, margin: "0 auto", overflowX: "hidden" }),
       }}
     >
       <style>{styles}</style>
+      <Backdrop left={withNav ? SIDEBAR_W : withRail ? RAIL_W : 0} />
 
       {withNav && <Sidebar screen={screen} go={go} onAdd={() => setSheet({ mode: "add" })} onImport={() => go("import")} />}
+      {withRail && <PhoneRail screen={screen} go={go} onAdd={() => setSheet({ mode: "add" })} />}
 
-      <div style={desktop ? { marginLeft: withNav ? SIDEBAR_W : 0, overflowX: "hidden" } : undefined}>
-      <div style={desktop ? { maxWidth: withNav ? CONTENT_MAX : MOBILE_MAX, margin: "0 auto", padding: withNav ? "0 16px" : 0 } : undefined}>
+      <div style={{ position: "relative", zIndex: 1, ...(desktop ? { marginLeft: withNav ? SIDEBAR_W : 0, overflowX: "hidden" } : { marginLeft: withRail ? RAIL_W : 0 }) }}>
+      <div style={desktop ? { maxWidth: withNav ? CONTENT_MAX : MOBILE_MAX, margin: "0 auto", padding: withNav ? "0 8px" : 0 } : undefined}>
       {!ready && <div className="appmin"><Skeleton /></div>}
       {ready && (
       <div
         key={screen + openId}
         style={{
           animation: `${dir === "fwd" ? "fwdIn" : "backIn"} .4s cubic-bezier(.32,.72,0,1) both`,
-          paddingBottom: tabbed && !desktop ? 104 : 48,
+          paddingBottom: 48,
         }}
         className="appmin"
       >
@@ -660,6 +666,8 @@ export default function App() {
             onOpen={(id) => { setOpenId(id); go("detail"); }}
             onTime={() => openFrom("time", "today")}
             onPlan={() => openFrom("plan", "today")}
+            onReality={() => go("reality")}
+            shortH={-totalShort} spareH={totalSpare}
             {...emptyActions}
           />
         )}
@@ -748,7 +756,6 @@ export default function App() {
       </div>
       </div>
 
-      {ready && showBar && <TabBar screen={screen} go={go} />}
 
       {sheet && (
         <SubjectSheet
@@ -767,8 +774,8 @@ export default function App() {
       {toast && (
         <div
           style={{
-            position: "fixed", bottom: showBar ? 100 : 32,
-            left: withNav ? `calc(50% + ${SIDEBAR_W / 2}px)` : "50%",
+            position: "fixed", bottom: 32,
+            left: withNav ? `calc(50% + ${SIDEBAR_W / 2}px)` : withRail ? `calc(50% + ${RAIL_W / 2}px)` : "50%",
             background: C.cardHi, border: `1px solid ${C.line}`, padding: "12px 20px",
             borderRadius: 999, fontSize: 14, fontWeight: 500,
             animation: "toastIn .35s cubic-bezier(.32,.72,0,1) both",
@@ -1033,7 +1040,7 @@ function TimeScreen({ wd, we, ov, lastExam, onSaveWd, onSaveWe, onSetDay, onRese
   );
 
   return (
-    <div style={{ padding: "60px 24px 0" }}>
+    <div style={{ padding: PAGE_PAD }}>
       {onBack && <BackLink label={backLabel} onClick={onBack} />}
       <Header title="Time" sub="What you actually have, not what you wish you had" />
 
@@ -1106,8 +1113,9 @@ function ThemeCard({ value, onChange, palette, onPalette }) {
         })}
       </div>
 
-      <div style={{ fontSize: 15, fontWeight: 600, marginTop: 20 }}>Palette</div>
-      <div role="radiogroup" aria-label="Palette" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))", gap: 10, marginTop: 12 }}>
+      <div style={{ fontSize: 15, fontWeight: 600, marginTop: 22 }}>Colour scheme</div>
+      <div style={{ fontSize: 12.5, color: C.dim, marginTop: 3 }}>{PALETTES.length} schemes, previewed in {mode} mode</div>
+      <div role="radiogroup" aria-label="Colour scheme" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))", gap: 14, marginTop: 14 }}>
         {PALETTES.map((p) => {
           const on = palette === p.id;
           const t = paletteTokens(p, mode);
@@ -1119,21 +1127,35 @@ function ThemeCard({ value, onChange, palette, onPalette }) {
               aria-label={p.name}
               className="focus-ring"
               onClick={() => onPalette(p.id)}
-              style={{ background: "transparent", padding: 0, color: C.text, display: "flex", flexDirection: "column", alignItems: "center", gap: 7 }}
+              style={{ background: "transparent", padding: 0, color: C.text, display: "flex", flexDirection: "column", alignItems: "stretch", gap: 8, textAlign: "left" }}
             >
               <span
                 aria-hidden="true"
                 style={{
-                  display: "flex", alignItems: "flex-end", gap: 5, width: "100%", maxWidth: 76, height: 52, boxSizing: "border-box",
-                  padding: 9, borderRadius: 14, background: t.bg, border: `1px solid ${t.line}`,
+                  position: "relative", display: "block", boxSizing: "border-box", padding: 10, borderRadius: 16,
+                  background: t.bg, border: `1px solid ${t.line}`,
                   outline: on ? `2.5px solid ${C.accent}` : "2.5px solid transparent", outlineOffset: 3,
                   transition: `outline-color .2s ${EASE}`,
                 }}
               >
-                <span style={{ width: 18, height: 18, borderRadius: 99, background: t.accent, flexShrink: 0 }} />
-                <span style={{ flex: 1, height: 18, borderRadius: 6, background: t.surface, border: `1px solid ${t.line}` }} />
+                <span style={{ display: "block", padding: 8, borderRadius: 10, background: t.surface, border: `1px solid ${t.line}` }}>
+                  <span style={{ display: "block", width: "48%", height: 10, borderRadius: 4, background: t.text }} />
+                  <span style={{ display: "flex", gap: 3, marginTop: 8 }}>
+                    <span style={{ flex: 1.3, height: 5, borderRadius: 3, background: t.accent }} />
+                    <span style={{ flex: 1, height: 5, borderRadius: 3, background: t.accentLine }} />
+                    <span style={{ flex: 0.8, height: 5, borderRadius: 3, background: t.raised }} />
+                  </span>
+                  <span style={{ display: "flex", gap: 3, marginTop: 6 }}>
+                    <span style={{ height: 6, width: 22, borderRadius: 99, background: t.shortfall, opacity: 0.85 }} />
+                    <span style={{ height: 6, width: 18, borderRadius: 99, background: t.fits, opacity: 0.85 }} />
+                  </span>
+                </span>
+                <span style={{ display: "block", marginTop: 8, height: 16, borderRadius: 7, background: t.accent }} />
+                {on && (
+                  <span style={{ position: "absolute", top: -7, right: -7, width: 22, height: 22, borderRadius: 99, background: C.accent, color: C.onAccent, display: "grid", placeItems: "center", fontSize: 12, fontWeight: 800, boxShadow: "var(--shadow)" }}>✓</span>
+                )}
               </span>
-              <span style={{ fontSize: 12, fontWeight: on ? 650 : 500, color: on ? C.text : C.dim, textAlign: "center", lineHeight: 1.3 }}>{p.name}</span>
+              <span style={{ fontSize: 12.5, fontWeight: on ? 650 : 550, color: on ? C.text : C.dim, lineHeight: 1.3, paddingLeft: 2 }}>{p.name}</span>
             </Tap>
           );
         })}
@@ -1148,7 +1170,7 @@ function Settings({ theme, onTheme, palette, onPalette, pace, onSavePace, wd, we
   const signedIn = !!(account && !account.isAnonymous && account.email);
   const label = { marginTop: SP.section };
   return (
-    <div style={{ padding: "60px 24px 0", maxWidth: 720 }}>
+    <div style={{ padding: PAGE_PAD, maxWidth: 720 }}>
       <Header title="Settings" sub="How the app looks, and what new subjects start with" />
 
       <SectionLabel>Appearance</SectionLabel>
@@ -1232,7 +1254,7 @@ function Settings({ theme, onTheme, palette, onPalette, pace, onSavePace, wd, we
 function TimerPicker({ data, onPick, onAdd, onImport }) {
   const ranked = rankByUrgency(data);
   return (
-    <div style={{ padding: "60px 24px 0" }}>
+    <div style={{ padding: PAGE_PAD }}>
       <Header title="Timer" sub="Time a study session; it's added to your hours when you say so" />
       {ranked.length === 0 ? (
         <EmptyState title="No subjects to study yet" text="Add your exams, then pick one here to time a session against it." onAdd={onAdd} onImport={onImport} />
@@ -1245,7 +1267,7 @@ function TimerPicker({ data, onPick, onAdd, onImport }) {
                 key={s.id}
                 className="card focus-ring"
                 onClick={() => onPick(s.id)}
-                style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 18, padding: "16px 18px", color: C.text, animation: `rise .5s ${EASE} ${0.04 * i}s both` }}
+                style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12, background: CARD_BG, border: `1px solid ${C.line}`, borderRadius: 18, padding: "16px 18px", color: C.text, animation: `rise .5s ${EASE} ${0.04 * i}s both` }}
               >
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <SubjectName s={s} />
@@ -1341,7 +1363,7 @@ function SyncChip({ sync }) {
 function Subjects({ data, passed, passedActions, onOpen, onAdd, onImport, onSample, sync }) {
   const desktop = useIsDesktop();
   return (
-    <div style={{ padding: "60px 24px 0" }}>
+    <div style={{ padding: PAGE_PAD }}>
       <Header title="Subjects" sub={`${data.length} exam${data.length === 1 ? "" : "s"} ahead`} />
       <SyncChip sync={sync} />
       {data.length === 0 && passed.length === 0 && (
@@ -1372,51 +1394,48 @@ function Subjects({ data, passed, passedActions, onOpen, onAdd, onImport, onSamp
         </div>
       )}
       {data.length > 0 && <SectionLabel>Exams</SectionLabel>}
-      <CardGrid>
-        {data.map((s, i) => (
-          <Tap
-            key={s.id}
-            className="card"
-            onClick={() => onOpen(s.id)}
-            style={{
-              display: "block", width: "100%", textAlign: "left", background: C.surface,
-              border: `1px solid ${C.line}`, borderRadius: 18, padding: 0,
-              overflow: "hidden", color: C.text,
-              animation: `rise .5s ${EASE} ${0.05 * i}s both`,
-            }}
-          >
-            <div style={{ display: "flex", height: "100%" }}>
-              <div style={{ width: 4, background: s.gap < -0.5 ? C.shortfall : C.fits, flexShrink: 0 }} />
-              <div style={{ padding: SP.card, flex: 1 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
-                  <SubjectName s={s} />
-                  {!s.sameName && <div style={{ fontSize: 13, color: C.dim }}>{fmtDate(s.date)}</div>}
-                </div>
-                <div style={{ marginTop: 8, fontSize: 14, color: s.gap < -0.5 ? C.shortfall : C.fits, fontWeight: 600 }}>
-                  {s.gap < -0.5 ? `${fmtH(-s.gap)} short` : `${fmtH(Math.max(0, s.gap))} spare`}
-                  <span style={{ color: C.dim, fontWeight: 400 }}>
-                    {"  ·  "}{s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · {s.doneCount}/{s.chapters} chapters
-                  </span>
-                </div>
-                {s.perDay != null && s.needed > 0 && (
-                  <div style={{ marginTop: 6, fontSize: 13, color: C.dim }}>
-                    Needs <span style={{ color: s.perDay > s.havePerDay ? C.shortfall : C.text, fontWeight: 600 }}>{fmtH(s.perDay)} a day</span>
-                    {s.syl && <> · ~{fmtMarks(s.marksLeft)} marks left</>}
-                  </div>
-                )}
-              </div>
-            </div>
-          </Tap>
-        ))}
-      </CardGrid>
+      <div style={{ display: "grid", gridTemplateColumns: desktop ? "repeat(auto-fill, minmax(250px, 1fr))" : "minmax(0, 1fr)", gap: desktop ? 16 : 10 }}>
+        {data.map((s, i) => {
+          const isShort = s.gap < -0.5;
+          const chPct = s.chapters ? (s.doneCount / s.chapters) * 100 : 0;
+          const needs = s.perDay != null && s.needed > 0;
+          return (
+            <Tap
+              key={s.id}
+              className="card focus-ring"
+              onClick={() => onOpen(s.id)}
+              style={{ ...tile(desktop), width: "100%", textAlign: "left", color: C.text, display: "flex", flexDirection: "column", animation: `rise .5s ${EASE} ${0.05 * i}s both` }}
+            >
+              <span style={{ display: "flex", flexDirection: desktop ? "column" : "row", justifyContent: "space-between", alignItems: desktop ? "stretch" : "flex-start", gap: desktop ? 0 : 12 }}>
+                <span style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                  <span style={{ fontSize: 16, fontWeight: 650, lineHeight: 1.25, overflowWrap: "break-word" }}>{s.name}</span>
+                  <span style={{ fontSize: 12.5, color: C.dim, marginTop: 3 }}>exam {fmtDate(s.date)} · {s.windowDays} study day{s.windowDays === 1 ? "" : "s"}</span>
+                </span>
+                <span style={{ display: "flex", flexDirection: desktop ? "row" : "column", alignItems: desktop ? "baseline" : "flex-end", gap: desktop ? 6 : 2, marginTop: desktop ? 12 : 0, flexShrink: 0 }}>
+                  <span style={{ ...bigNum(desktop ? 34 : 30), color: needs && s.perDay > s.havePerDay ? C.shortfall : C.text }}>{needs ? fmtH(s.perDay) : "0h"}</span>
+                  <span style={{ fontSize: 12.5, color: C.dim }}>a day</span>
+                </span>
+              </span>
+              <span style={{ alignSelf: "flex-start", marginTop: 10, fontSize: 12, fontWeight: 650, color: isShort ? C.shortfall : C.fits, background: isShort ? "var(--wash-shortfall)" : "var(--wash-fits)", border: `1px solid ${C.line}`, borderRadius: 99, padding: "3px 9px" }}>
+                {isShort ? `${fmtH(-s.gap)} short` : `${fmtH(Math.max(0, s.gap))} spare`}
+              </span>
+              <span style={{ flex: 1, minHeight: 14 }} />
+              {miniBar(chPct)}
+              <span style={{ fontSize: 11.5, color: C.dim, marginTop: 7, lineHeight: 1.4 }}>
+                {s.doneCount}/{s.chapters} chapters{s.syl ? ` · ~${fmtMarks(s.marksLeft)} marks left` : ""}
+              </span>
+            </Tap>
+          );
+        })}
+      </div>
       <PassedList passed={passed} {...passedActions} />
       {(data.length > 0 || passed.length > 0) && (
         <>
           <div style={{ display: "flex", gap: 10, marginTop: SP.group }}>
-            <Tap onClick={onAdd} style={{ flex: 1, background: "transparent", border: `1px dashed ${C.lineHi}`, color: C.dim, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 500 }}>
-              Add a subject
+            <Tap className="focus-ring" onClick={onAdd} style={{ flex: 1, background: C.surface, border: `1.5px dashed ${C.lineHi}`, color: C.text, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 600 }}>
+              + Add a subject
             </Tap>
-            <Tap onClick={onImport} style={{ flex: 1, background: "transparent", border: `1px dashed ${C.lineHi}`, color: C.dim, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 500 }}>
+            <Tap className="focus-ring" onClick={onImport} style={{ flex: 1, background: C.surface, border: `1.5px dashed ${C.lineHi}`, color: C.text, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 600 }}>
               Import portions
             </Tap>
           </div>
@@ -1452,7 +1471,7 @@ function EmptyState({ title, text, onAdd, onImport }) {
 /* the shape of a screen, while the saved plan loads */
 function Skeleton() {
   return (
-    <div role="status" aria-busy="true" aria-label="Loading your plan" style={{ padding: "60px 24px 0" }}>
+    <div role="status" aria-busy="true" aria-label="Loading your plan" style={{ padding: PAGE_PAD }}>
       <div className="skel" style={{ width: 150, height: 34, borderRadius: 10 }} />
       <div className="skel" style={{ width: 210, height: 15, borderRadius: 8, marginTop: 12 }} />
       <div className="skel" style={{ height: 168, borderRadius: 22, marginTop: SP.section }} />
@@ -1464,23 +1483,65 @@ function Skeleton() {
 }
 
 /* ------------------------------ TODAY ------------------------------ */
-const longDate = (d) => d.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" });
 
-function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, onPlan, onAdd, onImport }) {
+/* A progress ring: the app's widgets use it for "how much of it is done/covered" */
+function Ring({ pct, size = 76, stroke = 7, color = C.accent, children }) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const p = Math.max(0, Math.min(100, pct || 0));
+  return (
+    <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true" style={{ display: "block", transform: "rotate(-90deg)" }}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke} style={{ stroke: C.raised }} />
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth={stroke} strokeLinecap="round"
+          strokeDasharray={c} strokeDashoffset={c * (1 - p / 100)}
+          style={{ stroke: color, transition: `stroke-dashoffset .9s ${EASE}` }} />
+      </svg>
+      <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", textAlign: "center", fontFamily: DISPLAY, fontWeight: 650, fontSize: size * 0.2, color: C.text, letterSpacing: "-0.02em" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* the widget tile every dashboard is built from */
+const tile = (desktop) => ({ ...card, borderRadius: 22, padding: desktop ? 20 : 16, boxSizing: "border-box", minWidth: 0 });
+const tileLabel = { fontSize: 12.5, fontWeight: 550, color: C.dim, lineHeight: 1.3 };
+const bigNum = (size) => ({ fontFamily: DISPLAY, fontSize: size, fontWeight: 650, letterSpacing: "-0.04em", lineHeight: 1, fontVariantNumeric: "tabular-nums" });
+const miniBar = (pct, color = C.accent) => (
+  <div style={{ height: 5, borderRadius: 99, background: C.raised, overflow: "hidden" }}>
+    <div style={{ width: `${Math.max(0, Math.min(100, pct))}%`, height: "100%", borderRadius: 99, background: color, transition: `width .8s ${EASE}` }} />
+  </div>
+);
+
+function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, onPlan, onReality, shortH, spareH, onAdd, onImport }) {
+  const desktop = useIsDesktop();
   const next = day.rows.find((r) => r.left > 1e-6);
   const listed = day.rows.filter((r) => r.planned > 1e-6 || r.done > 1e-6);
   const resting = day.rows.filter((r) => r.planned <= 1e-6 && r.done <= 1e-6);
   const count = day.rows.filter((r) => r.left > 1e-6).length;
   const n = useCountUp(day.left);
+  const now = new Date();
+  const byId = Object.fromEntries(data.map((x) => [x.id, x]));
+  const soonest = data.reduce((a, b) => (!a || toDate(b.date) < toDate(a.date) ? b : a), null);
+  const soonDays = soonest ? daysUntil(soonest.date) : null;
+  const donePct = day.planned > 1e-6 ? (day.done / day.planned) * 100 : day.left <= 1e-6 ? 100 : 0;
+  const isShort = shortH > 0.5;
 
-  const big = { fontSize: 72, fontWeight: 700, letterSpacing: -3.5, lineHeight: 1, fontVariantNumeric: "tabular-nums" };
-  const line = { fontSize: 16.5, fontWeight: 500, marginTop: 12, lineHeight: 1.45 };
-  const sub = { fontSize: 13.5, color: C.dim, marginTop: 8, lineHeight: 1.5 };
-  const startBtn = { width: "100%", marginTop: 22, background: C.accent, color: C.onAccent, padding: "16px 12px", borderRadius: 14, fontSize: 16, fontWeight: 650 };
+  const line = { fontSize: 15, fontWeight: 500, marginTop: 10, lineHeight: 1.45 };
+  const sub = { fontSize: 13.5, color: C.dim, marginTop: 6, lineHeight: 1.5 };
+  const startBtn = { width: "100%", marginTop: 18, background: C.accent, color: C.onAccent, padding: "15px 12px", borderRadius: 15, fontSize: 15.5, fontWeight: 650 };
+  const grid = { display: "grid", gridTemplateColumns: desktop ? "repeat(4, minmax(0, 1fr))" : "repeat(2, minmax(0, 1fr))", gap: desktop ? 16 : 10, alignItems: "stretch" };
+  /* the small tiles fill the space beside the big one; the Reality tile then
+     takes whatever is left of its row, so the grid never has a hole */
+  const smallTiles = listed.length + (soonest ? 1 : 0);
+  const left = smallTiles <= 4 ? 4 - smallTiles : (4 - ((smallTiles - 4) % 4)) % 4;
+  const realitySpan = desktop ? (left === 0 ? "1 / -1" : `span ${smallTiles <= 4 ? Math.min(2, left) : left}`) : "1 / -1";
+  const nextSpan = !desktop && smallTiles % 2 === 1 ? "1 / -1" : undefined;
 
   return (
-    <div style={{ padding: "60px 24px 0" }}>
-      <Header title="Today" sub={longDate(new Date())} />
+    <div style={{ padding: PAGE_PAD }}>
+      <Header kicker={now.toLocaleDateString("en-IN", { weekday: "long" })} title={now.toLocaleDateString("en-IN", { day: "numeric", month: "long" })} />
 
       {data.length === 0 ? (
         <EmptyState
@@ -1490,78 +1551,136 @@ function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, 
         />
       ) : (
         <>
-          <div className="rise card" style={{ ...hero("accent"), marginBottom: SP.section }}>
-            <div style={{ ...big, color: day.left > 1e-6 ? C.accent : C.fits }} aria-label={`${fmtH(day.left)} to study today`}>{fmtH(n)}</div>
-            {day.capacity <= 0 ? (
-              <>
-                <div style={line}>No study time set for today.</div>
-                <div style={sub}>
-                  Today has 0 hours on the{" "}
-                  <Tap className="focus-ring" onClick={onTime} style={{ background: "none", padding: 0, color: C.accentText, fontWeight: 600, fontSize: "inherit" }}>Time</Tap>
-                  {" "}tab. Change it there if you're studying today.
+          <div style={grid}>
+            {/* today: the one number, its progress, and the way in */}
+            <div className="rise card" style={{ ...tile(desktop), gridColumn: desktop ? "span 2" : "1 / -1", gridRow: desktop ? "span 2" : undefined, display: "flex", flexDirection: "column", padding: desktop ? 26 : 18 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={tileLabel}>Today</div>
+                  <div style={{ ...bigNum(desktop ? 64 : 50), marginTop: 6, color: day.left > 1e-6 ? C.text : C.fits }} aria-label={`${fmtH(day.left)} to study today`}>{fmtH(n)}</div>
                 </div>
-              </>
-            ) : day.planned <= 1e-6 ? (
-              <>
-                <div style={line}>Nothing needed today.</div>
-                <div style={sub}>Every subject is covered by the hours you've already put in.</div>
-              </>
-            ) : day.left <= 1e-6 ? (
-              <>
-                <div style={line}>Today's hours are done.</div>
-                <div style={sub}>{fmtH(day.done)} logged today, against {fmtH(day.planned)} planned.</div>
-              </>
-            ) : (
-              <>
-                <div style={line}>to study today{count > 1 ? `, across ${count} subjects` : ""}.</div>
-                {day.done > 1e-6 && <div style={sub}>{fmtH(day.done)} logged so far, of {fmtH(day.planned)} planned.</div>}
-              </>
+                <Ring pct={donePct} size={desktop ? 96 : 74} stroke={desktop ? 8 : 7} color={day.left > 1e-6 ? C.accent : C.fits}>
+                  <span style={{ display: "block" }}>{Math.round(donePct)}%<span style={{ display: "block", fontFamily: FONT, fontSize: desktop ? 10.5 : 9.5, fontWeight: 550, color: C.dim, letterSpacing: 0, marginTop: 2 }}>done</span></span>
+                </Ring>
+              </div>
+              {day.capacity <= 0 ? (
+                <>
+                  <div style={line}>No study time set for today.</div>
+                  <div style={sub}>
+                    Today has 0 hours on the{" "}
+                    <Tap className="focus-ring" onClick={onTime} style={{ background: "none", padding: 0, color: C.accentText, fontWeight: 600, fontSize: "inherit" }}>Time</Tap>
+                    {" "}tab. Change it there if you're studying today.
+                  </div>
+                </>
+              ) : day.planned <= 1e-6 ? (
+                <>
+                  <div style={line}>Nothing needed today.</div>
+                  <div style={sub}>Every subject is covered by the hours you've already put in.</div>
+                </>
+              ) : day.left <= 1e-6 ? (
+                <>
+                  <div style={line}>Today's hours are done.</div>
+                  <div style={sub}>{fmtH(day.done)} logged today, against {fmtH(day.planned)} planned.</div>
+                </>
+              ) : (
+                <>
+                  <div style={line}>to study today{count > 1 ? `, across ${count} subjects` : ""}.</div>
+                  {day.done > 1e-6 && <div style={sub}>{fmtH(day.done)} logged so far, of {fmtH(day.planned)} planned.</div>}
+                </>
+              )}
+              <div style={{ flex: 1 }} />
+              {session ? (
+                <Tap className="focus-ring" onClick={onResume} style={startBtn}>Back to the timer</Tap>
+              ) : next ? (
+                <Tap className="focus-ring" onClick={() => onStart(next.id)} style={startBtn}>Start with {next.name}</Tap>
+              ) : null}
+            </div>
+
+            {/* each subject today, in order of priority */}
+            {listed.map((r, i) => {
+              const s = byId[r.id];
+              const chPct = s?.chapters ? (s.doneCount / s.chapters) * 100 : 0;
+              const finished = r.left <= 1e-6;
+              return (
+                <Tap
+                  key={r.id}
+                  className="card focus-ring"
+                  aria-label={`${r.name}: ${finished ? "done for today" : `${fmtH(r.left)} today`}, priority ${i + 1}`}
+                  onClick={() => onOpen(r.id)}
+                  style={{ ...tile(desktop), width: "100%", textAlign: "left", color: C.text, display: "flex", flexDirection: "column", animation: `rise .5s ${EASE} ${0.05 * (i + 1)}s both` }}
+                >
+                  <span style={{ ...tileLabel, overflowWrap: "break-word", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{r.name}</span>
+                  {finished ? (
+                    <span style={{ ...bigNum(desktop ? 30 : 26), marginTop: 8, color: C.fits }}>Done</span>
+                  ) : (
+                    <span style={{ ...bigNum(desktop ? 34 : 30), marginTop: 8 }}>{fmtH(r.left)}</span>
+                  )}
+                  <span style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>
+                    <b style={{ fontWeight: 700, color: C.text }}>#{i + 1}</b> · {finished ? "for today" : "today"}{r.done > 1e-6 && !finished ? ` · ${fmtH(r.done)} logged` : ""}
+                  </span>
+                  <span style={{ flex: 1, minHeight: 12 }} />
+                  {miniBar(chPct)}
+                  <span style={{ fontSize: 11.5, color: C.dim, marginTop: 7 }}>
+                    {s ? `${s.doneCount}/${s.chapters} chapters` : ""}{s?.sameName ? ` · ${fmtDate(r.date)}` : ` · exam ${fmtDate(r.date)}`}
+                  </span>
+                </Tap>
+              );
+            })}
+
+            {/* the nearest exam */}
+            {soonest && (
+              <Tap
+                className="card focus-ring"
+                onClick={() => onOpen(soonest.id)}
+                style={{ ...tile(desktop), width: "100%", textAlign: "left", color: C.text, display: "flex", flexDirection: "column", gridColumn: nextSpan, animation: `rise .5s ${EASE} .2s both` }}
+              >
+                <span style={tileLabel}>Next exam</span>
+                <span style={{ ...bigNum(desktop ? 34 : 30), marginTop: 8 }}>{soonDays === 0 ? "Today" : soonDays}</span>
+                <span style={{ fontSize: 12, color: C.dim, marginTop: 4, lineHeight: 1.4 }}>
+                  {soonDays === 0 ? "" : `day${soonDays === 1 ? "" : "s"} · `}{soonest.name}
+                </span>
+                <span style={{ flex: 1 }} />
+                <span style={{ fontSize: 11.5, color: C.dim, marginTop: 10 }}>{fmtDate(soonest.date)}</span>
+              </Tap>
             )}
-            {session ? (
-              <Tap className="focus-ring" onClick={onResume} style={startBtn}>Back to the timer</Tap>
-            ) : next ? (
-              <Tap className="focus-ring" onClick={() => onStart(next.id)} style={startBtn}>Start with {next.name}</Tap>
-            ) : null}
+
+            {/* where it all lands */}
+            <Tap
+              className="card focus-ring"
+              onClick={onReality}
+              style={{ ...tile(desktop), width: "100%", textAlign: "left", color: C.text, gridColumn: realitySpan, display: "flex", alignItems: "center", gap: 14, animation: `rise .5s ${EASE} .25s both` }}
+            >
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ ...tileLabel, display: "block" }}>Reality check</span>
+                <span style={{ ...bigNum(desktop ? 30 : 26), display: "block", marginTop: 8, color: isShort ? C.shortfall : C.fits }}>
+                  {isShort ? `${fmtH(shortH)} short` : "It all fits"}
+                </span>
+                <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 5 }}>
+                  {isShort ? `across ${data.length} exam${data.length === 1 ? "" : "s"}` : `${fmtH(spareH)} to spare across ${data.length} exam${data.length === 1 ? "" : "s"}`}
+                </span>
+              </span>
+              <span aria-hidden="true" style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 44, flexShrink: 0 }}>
+                {riskOrder(data).slice(0, 5).map((x) => {
+                  const m = Math.max(...data.map((y) => Math.abs(y.gap)), 1);
+                  return <span key={x.id} title={x.name} style={{ width: 8, borderRadius: 4, height: `${Math.max(14, (Math.abs(x.gap) / m) * 100)}%`, background: x.gap < -0.5 ? C.shortfall : C.fits, opacity: 0.85 }} />;
+                })}
+              </span>
+              <span aria-hidden="true" style={{ color: C.dim, fontSize: 20, flexShrink: 0 }}>›</span>
+            </Tap>
           </div>
 
-          {listed.length > 0 && <SectionLabel>In order of priority</SectionLabel>}
-          <CardGrid>
-            {listed.map((r, i) => (
-              <Tap
-                key={r.id}
-                className="card focus-ring"
-                onClick={() => onOpen(r.id)}
-                style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 14, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 18, padding: "16px 18px", color: C.text, animation: `rise .5s ${EASE} ${0.05 * i}s both` }}
-              >
-                <span style={{ width: 18, flexShrink: 0, color: C.dim, fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{i + 1}</span>
-                <span style={{ flex: 1, minWidth: 0 }}>
-                  <SubjectName s={r} />
-                  <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 3 }}>
-                    exam {fmtDate(r.date)}{r.done > 1e-6 && ` · ${fmtH(r.done)} logged today`}
-                  </span>
-                </span>
-                <span style={{ flexShrink: 0, textAlign: "right" }}>
-                  {r.left > 1e-6 ? (
-                    <span style={{ fontSize: 18, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmtH(r.left)}</span>
-                  ) : (
-                    <span style={{ fontSize: 13, fontWeight: 650, color: C.fits }}>Done for today</span>
-                  )}
-                </span>
-              </Tap>
-            ))}
-          </CardGrid>
           {resting.length > 0 && (
-            <div style={{ fontSize: 13, color: C.dim, marginTop: 12, lineHeight: 1.5 }}>
+            <div style={{ fontSize: 13, color: C.dim, marginTop: 14, lineHeight: 1.5 }}>
               Nothing needed today for {resting.map((r) => r.name).join(", ")}.
             </div>
           )}
-          <div style={{ fontSize: 12.5, color: C.dim, marginTop: 16, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 12.5, color: C.dim, marginTop: 14, lineHeight: 1.55 }}>
             From the day-by-day plan: today's {fmtH(day.capacity)} are shared between your subjects by how much each needs per day before its exam.
           </div>
           <Tap
             className="focus-ring"
             onClick={onPlan}
-            style={{ width: "100%", marginTop: SP.group, background: "transparent", border: `1px solid ${C.line}`, color: C.text, padding: "14px 0", borderRadius: 16, fontSize: 15, fontWeight: 600 }}
+            style={{ width: "100%", marginTop: SP.group, background: C.surface, border: `1px solid ${C.line}`, color: C.text, padding: "14px 0", borderRadius: 16, fontSize: 15, fontWeight: 600 }}
           >
             See the full plan ›
           </Tap>
@@ -1646,6 +1765,7 @@ function HowWorkedOut({ s, todayHours }) {
 }
 
 function Reality({ data, passed, passedActions, totalShort, totalSpare, todayHours, onSetLog, onAdd, onImport, onOpen, onTime }) {
+  const desktop = useIsDesktop();
   const short = -totalShort;
   const isShort = short > 0.5;
   const [go, setGo] = useState(false);
@@ -1657,7 +1777,7 @@ function Reality({ data, passed, passedActions, totalShort, totalSpare, todayHou
   const actionBtn = { marginTop: 14, background: C.surface, border: `1px solid ${C.line}`, color: C.text, padding: "12px 18px", borderRadius: 12, fontSize: 14, fontWeight: 600 };
 
   return (
-    <div style={{ padding: "60px 24px 0" }}>
+    <div style={{ padding: PAGE_PAD }}>
       <Header title="Reality check" sub="Where the numbers actually land" />
 
       {data.length === 0 && (
@@ -1672,8 +1792,14 @@ function Reality({ data, passed, passedActions, totalShort, totalSpare, todayHou
         <div className="rise card" style={{ ...hero(isShort ? "shortfall" : "fits"), marginBottom: SP.section }}>
           {isShort ? (
             <>
-              <div role="status" style={{ fontSize: 26, fontWeight: 700, letterSpacing: -0.6, lineHeight: 1.25 }}>
-                You're <span style={{ color: C.shortfall }}>{fmtH(short)} short</span> overall. {first.name} is the one that breaks first.
+              <div role="status">
+                <div style={{ display: "flex", alignItems: "baseline", flexWrap: "wrap", gap: "0 10px" }}>
+                  <span style={{ ...bigNum(desktop ? 68 : 56), color: C.shortfall }}>{fmtH(short)}</span>
+                  <span style={{ fontFamily: DISPLAY, fontSize: desktop ? 24 : 21, fontWeight: 600, color: C.dim, letterSpacing: "-0.02em" }}>short overall</span>
+                </div>
+                <div style={{ fontSize: 18, fontWeight: 650, letterSpacing: "-0.015em", lineHeight: 1.35, marginTop: 12 }}>
+                  {first.name} is the one that breaks first.
+                </div>
               </div>
               <div style={{ fontSize: 15, marginTop: 14, lineHeight: 1.55 }}>
                 {action.kind === "hours" && <>Add about <b style={{ fontWeight: 650 }}>{fmtH(action.perDay)} a day</b> until its exam on {fmtDate(first.date)} and it fits.</>}
@@ -1686,8 +1812,11 @@ function Reality({ data, passed, passedActions, totalShort, totalSpare, todayHou
             </>
           ) : (
             <>
-              <div role="status" style={{ fontSize: 26, fontWeight: 700, letterSpacing: -0.6, lineHeight: 1.25 }}>
-                Everything fits, with <span style={{ color: C.fits }}>{fmtH(totalSpare)} to spare</span>.
+              <div role="status">
+                <div style={{ ...bigNum(desktop ? 56 : 46), color: C.fits }}>It all fits</div>
+                <div style={{ fontSize: 18, fontWeight: 650, letterSpacing: "-0.015em", lineHeight: 1.35, marginTop: 12 }}>
+                  Everything fits, with <span style={{ color: C.fits }}>{fmtH(totalSpare)} to spare</span>.
+                </div>
               </div>
               <div style={{ fontSize: 15, marginTop: 12, lineHeight: 1.55 }}>Spare hours are what absorbs a bad week.</div>
             </>
@@ -1696,6 +1825,32 @@ function Reality({ data, passed, passedActions, totalShort, totalSpare, todayHou
             Every day's hours are shared between the subjects whose exams are still ahead,
             weighted by how much each one needs. No hour is counted twice.
           </div>
+        </div>
+      )}
+
+      {data.length > 1 && (
+        <div className="rise card" style={{ ...card, borderRadius: 22, marginBottom: SP.section, animationDelay: ".08s" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontWeight: 650, letterSpacing: ".1em", textTransform: "uppercase", color: C.dim, marginBottom: 6 }}>
+            <span>◂ Short</span><span>At a glance</span><span>Spare ▸</span>
+          </div>
+          {ranked.map((s) => {
+            const m = Math.max(...ranked.map((x) => Math.abs(x.gap)), 1);
+            const w = (Math.abs(s.gap) / m) * 50;
+            const sh = s.gap < -0.5;
+            return (
+              <Tap key={s.id} className="focus-ring" onClick={() => onOpen(s.id)} aria-label={`${s.name}: ${sh ? `${fmtH(-s.gap)} short` : `${fmtH(Math.max(0, s.gap))} spare`}`}
+                style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", color: C.text, padding: "10px 0", borderTop: `1px solid ${C.line}` }}>
+                <span style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, fontSize: 14, fontWeight: 600 }}>
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                  <span style={{ flexShrink: 0, fontVariantNumeric: "tabular-nums", color: sh ? C.shortfall : C.fits }}>{s.gap >= 0 ? "+" : "−"}{fmtH(Math.abs(s.gap))}</span>
+                </span>
+                <span aria-hidden="true" style={{ position: "relative", display: "block", height: 10, marginTop: 8, borderRadius: 99, background: C.raised }}>
+                  <span style={{ position: "absolute", top: 0, bottom: 0, borderRadius: 99, background: sh ? C.shortfall : C.fits, ...(sh ? { right: "50%" } : { left: "50%" }), width: go ? `${Math.max(1.5, w)}%` : 0, transition: `width .9s ${EASE}` }} />
+                  <span style={{ position: "absolute", left: "50%", top: -4, bottom: -4, width: 2, marginLeft: -1, borderRadius: 2, background: C.text, opacity: 0.45 }} />
+                </span>
+              </Tap>
+            );
+          })}
         </div>
       )}
 
@@ -1883,7 +2038,7 @@ function Plan({ data, onAdd, onImport, onBack, backLabel }) {
   );
 
   return (
-    <div style={{ padding: "60px 24px 0" }}>
+    <div style={{ padding: PAGE_PAD }}>
       {onBack && <BackLink label={backLabel} onClick={onBack} />}
       <Header title="Plan" sub="Phases sized to how each subject behaves" />
       {data.length === 0 ? (
@@ -1922,7 +2077,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
 
   if (!s) {
     return (
-      <div style={{ padding: "60px 24px 0" }}>
+      <div style={{ padding: PAGE_PAD }}>
         <Tap onClick={onBack} style={{ background: "transparent", color: C.accentText, padding: 0, fontSize: 16, marginBottom: 22, fontWeight: 500 }}>
           ‹ Subjects
         </Tap>
@@ -1931,6 +2086,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
     );
   }
   const pct = s.chapters ? (s.doneCount / s.chapters) * 100 : 0;
+  const maxCost = Math.max(0, ...(s.costs ?? []).filter((c, j) => !s.done?.[j] && Number.isFinite(c)));
 
   /* Fastest way to the target score. Chapters left off this subject when it
      was added count as covered (the picker asks for what's still to do). */
@@ -1985,15 +2141,23 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
   /* the numbers about this subject, and its chapters; side by side on a wide screen */
   const numbers = (
     <>
-      <div className="rise card" style={{ ...card, marginBottom: SP.group }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 12 }}>
+      <div className="rise card" style={{ ...card, borderRadius: 22, marginBottom: SP.group }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 14, marginBottom: 10 }}>
           <span style={{ color: C.dim }}>Chapters done</span>
-          <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{s.doneCount} / {s.chapters}</span>
+          <span style={{ fontFamily: DISPLAY, fontSize: 20, fontWeight: 650, letterSpacing: "-0.02em", fontVariantNumeric: "tabular-nums" }}>{s.doneCount} / {s.chapters}</span>
         </div>
-        <div style={{ height: 8, background: C.raised, borderRadius: 99, overflow: "hidden" }}>
-          <div style={{ height: "100%", width: `${pct}%`, background: C.amber, borderRadius: 99, transition: "width .6s cubic-bezier(.32,.72,0,1)" }} />
-        </div>
-        <div style={{ fontSize: 13, color: C.dim, marginTop: 14, lineHeight: 1.5 }}>
+        {miniBar(pct)}
+        {[
+          ["Hours left", fmtH(s.needed)],
+          ["An average chapter", `~${fmtH(s.perChapter)}`],
+          ...(s.logged > 0 ? [["Logged so far", fmtH(s.logged)]] : []),
+        ].map(([k, v]) => (
+          <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, padding: "11px 0 0", marginTop: 11, borderTop: `1px solid ${C.line}`, fontSize: 14 }}>
+            <span style={{ color: C.dim }}>{k}</span>
+            <span style={{ fontWeight: 650, fontVariantNumeric: "tabular-nums" }}>{v}</span>
+          </div>
+        ))}
+        <div style={{ fontSize: 12.5, color: C.dim, marginTop: 12, lineHeight: 1.5 }}>
           At your pace, an average remaining chapter here is worth about {fmtH(s.perChapter)} — hard ones cost more, easy ones less.
           {s.logged > 0 && ` You've also logged ${fmtH(s.logged)} here.`}
         </div>
@@ -2021,19 +2185,23 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
 
       {s.perDay != null && s.needed > 0 && (
         <div className="rise card" style={{ ...hero(s.perDay > s.havePerDay ? "shortfall" : "accent"), marginBottom: SP.group, animationDelay: ".05s" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-            <div>
-              <div style={{ fontSize: 64, fontWeight: 700, letterSpacing: -3, lineHeight: 1, color: s.perDay > s.havePerDay ? C.shortfall : C.accent }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={tileLabel}>Each day</div>
+              <div style={{ ...bigNum(56), marginTop: 6, color: s.perDay > s.havePerDay ? C.shortfall : C.text }}>
                 {fmtH(s.perDay)}
               </div>
               <div style={{ fontSize: 14, color: C.dim, marginTop: 8, lineHeight: 1.45 }}>
-                a day to finish what's left by {fmtDate(s.date)}
+                to finish what's left by {fmtDate(s.date)}
               </div>
             </div>
-            <div style={{ textAlign: "right", flexShrink: 0 }}>
-              <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmtH(s.havePerDay)}</div>
-              <div style={{ fontSize: 12, color: C.dim, marginTop: 4, lineHeight: 1.35 }}>in your study day,<br />all subjects</div>
-            </div>
+            <Ring pct={s.needed > 0 ? (s.available / s.needed) * 100 : 100} size={82} stroke={7} color={s.available >= s.needed ? C.fits : C.accent}>
+              <span style={{ display: "block" }}>{Math.min(999, Math.round(s.needed > 0 ? (s.available / s.needed) * 100 : 100))}%<span style={{ display: "block", fontFamily: FONT, fontSize: 9.5, fontWeight: 550, color: C.dim, letterSpacing: 0, marginTop: 2 }}>covered</span></span>
+            </Ring>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginTop: 16, fontSize: 14 }}>
+            <span style={{ color: C.dim }}>Your study day, all subjects</span>
+            <span style={{ fontWeight: 650, fontVariantNumeric: "tabular-nums" }}>{fmtH(s.havePerDay)}</span>
           </div>
           <div style={{ fontSize: 13, color: C.dim, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.line}`, lineHeight: 1.55 }}>
             {fmtH(s.needed)} left over {s.studyDays} study day{s.studyDays === 1 ? "" : "s"}.{" "}
@@ -2177,6 +2345,11 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
                       Ch {ch.no} · {ch.questions} questions · ~{fmtMarks(ch.marksEst)} marks
                     </span>
                   )}
+                  {!s.done[i] && maxCost > 0 && (
+                    <span aria-hidden="true" style={{ display: "block", height: 4, marginTop: 8, borderRadius: 99, background: C.raised, overflow: "hidden" }}>
+                      <span style={{ display: "block", height: "100%", borderRadius: 99, width: `${Math.max(3, ((s.costs?.[i] ?? 0) / maxCost) * 100)}%`, background: diffMeta(s.diffs?.[i] ?? 2).v === 3 ? C.accent : C.lineHi }} />
+                    </span>
+                  )}
                   {wm != null && (
                     <span style={{ display: "block", marginTop: 6 }}>
                       {!s.done[i] && (
@@ -2241,18 +2414,18 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
   );
 
   return (
-    <div style={{ padding: "60px 24px 0" }}>
+    <div style={{ padding: PAGE_PAD }}>
       <Tap onClick={onBack} style={{ background: "transparent", color: C.accentText, padding: 0, fontSize: 16, marginBottom: 22, fontWeight: 500 }}>
         ‹ Subjects
       </Tap>
 
-      <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: -1, margin: "0 0 6px" }}>
+      <div style={{ color: C.dim, fontSize: 14, fontWeight: 500, marginBottom: 2 }}>
+        Exam {fmtDate(s.date)} · {s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · {s.meta.label}-heavy
+      </div>
+      <h1 style={{ fontFamily: DISPLAY, fontSize: 34, fontWeight: 650, letterSpacing: "-0.035em", lineHeight: 1.1, margin: 0 }}>
         {s.name}
         {s.sameName && <span style={{ ...dateChip, fontSize: 15, verticalAlign: "middle", marginLeft: 10 }}>{fmtDate(s.date)}</span>}
       </h1>
-      <div style={{ color: C.dim, fontSize: 15 }}>
-        {s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · exam {fmtDate(s.date)} · {s.meta.label}-heavy
-      </div>
       <Tap
         className="focus-ring"
         onClick={() => onStudy(s.id)}
@@ -2881,11 +3054,12 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
 }
 
 /* ----------------------------- CHROME ----------------------------- */
-function Header({ title, sub }) {
+function Header({ title, sub, kicker }) {
   return (
-    <div style={{ marginBottom: SP.section }}>
-      <h1 className="rise" style={{ fontSize: 34, fontWeight: 700, letterSpacing: -1, margin: 0 }}>{title}</h1>
-      <div className="rise" style={{ color: C.dim, fontSize: 15, marginTop: 6, animationDelay: ".05s" }}>{sub}</div>
+    <div style={{ marginBottom: 26 }}>
+      {kicker && <div className="rise" style={{ color: C.dim, fontSize: 14, fontWeight: 500, marginBottom: 2 }}>{kicker}</div>}
+      <h1 className="rise" style={{ fontFamily: DISPLAY, fontSize: 34, fontWeight: 650, letterSpacing: "-0.035em", lineHeight: 1.1, margin: 0, animationDelay: ".03s" }}>{title}</h1>
+      {sub && <div className="rise" style={{ color: C.dim, fontSize: 14.5, marginTop: 6, lineHeight: 1.45, animationDelay: ".06s" }}>{sub}</div>}
     </div>
   );
 }
@@ -2933,39 +3107,60 @@ const Icon = {
   ),
 };
 
-/* Desktop navigation: the same tabs as the phone's TabBar, always
-   visible down the left edge. The subject detail page counts as Subjects. */
+/* The screens in the navigation; the subject page and import count as
+   Subjects, and Plan and Time (opened from Today and Settings on a phone)
+   light up the screen they came from there. */
+const NAV_TABS = [
+  { id: "today", label: "Today", short: "Today", icon: Icon.today },
+  { id: "subjects", label: "Subjects", short: "Subjects", icon: Icon.subjects },
+  { id: "reality", label: "Reality check", short: "Check", icon: Icon.reality },
+  { id: "plan", label: "Plan", short: "Plan", icon: Icon.plan },
+  { id: "timer", label: "Timer", short: "Timer", icon: Icon.timer },
+  { id: "time", label: "Time", short: "Time", icon: Icon.time },
+  { id: "settings", label: "Settings", short: "Settings", icon: Icon.settings },
+];
+const navCurrent = (screen) => (screen === "detail" || screen === "import" ? "subjects" : screen);
+
+/* The navigation's own background: a shade lighter than the page, warming to
+   a soft accent glow at the bottom (the page washes in from the top-left,
+   cards from the bottom-right), so it stands apart from the content. */
+const NAV_BG = `radial-gradient(140% 50% at 0% 100%, ${C.accentSoft}, transparent 80%), linear-gradient(180deg, ${C.surface}, ${C.raised})`;
+
+function LogoTile({ size = 44 }) {
+  return (
+    <span aria-hidden="true" style={{ width: size, height: size, borderRadius: size * 0.32, background: C.raised, border: `1px solid ${C.line}`, display: "grid", placeItems: "center", flexShrink: 0 }}>
+      <Mark size={size * 0.5} />
+    </span>
+  );
+}
+
+/* Desktop: a labelled sidebar down the left edge, on every screen */
 function Sidebar({ screen, go, onAdd, onImport }) {
   const [hover, setHover] = useState(null);
-  const tabs = [
-    { id: "today", label: "Today", icon: Icon.today },
-    { id: "subjects", label: "Subjects", icon: Icon.subjects },
-    { id: "reality", label: "Reality check", icon: Icon.reality },
-    { id: "plan", label: "Plan", icon: Icon.plan },
-    { id: "timer", label: "Timer", icon: Icon.timer },
-    { id: "time", label: "Time", icon: Icon.time },
-    { id: "settings", label: "Settings", icon: Icon.settings },
-  ];
-  const current = screen === "detail" || screen === "import" ? "subjects" : screen;
-  const idx = tabs.findIndex((t) => t.id === current);
+  const current = navCurrent(screen);
+  const idx = NAV_TABS.findIndex((t) => t.id === current);
 
   return (
     <nav
       aria-label="Main"
       style={{
         position: "fixed", top: 0, bottom: 0, left: 0, width: SIDEBAR_W, zIndex: 40,
-        borderRight: `1px solid ${C.line}`, background: C.raised,
-        padding: "36px 16px 24px", boxSizing: "border-box",
+        borderRight: `1px solid ${C.line}`, background: NAV_BG,
+        padding: "26px 18px 22px", boxSizing: "border-box",
         display: "flex", flexDirection: "column", gap: 4,
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 12px 28px" }}>
-        <Mark size={20} />
-        <span style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5, color: C.text }}>Feasible</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "0 6px 26px" }}>
+        <LogoTile />
+        <span style={{ display: "flex", flexDirection: "column", lineHeight: 1.15 }}>
+          <span style={{ fontFamily: DISPLAY, fontSize: 21, fontWeight: 650, letterSpacing: "-0.03em", color: C.text }}>Feasible</span>
+          <span style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>Study planner</span>
+        </span>
       </div>
-      {tabs.map((t, i) => {
+      <div style={{ fontSize: 11, fontWeight: 650, letterSpacing: ".1em", textTransform: "uppercase", color: C.dim, padding: "0 10px 8px" }}>Menu</div>
+      {NAV_TABS.map((t, i) => {
         const active = t.id === current;
-        const col = active ? C.accentText : hover === t.id ? C.text : C.dim;
+        const col = active ? C.onAccent : hover === t.id ? C.text : C.dim;
         return (
           <Tap
             key={t.id}
@@ -2976,30 +3171,31 @@ function Sidebar({ screen, go, onAdd, onImport }) {
             onMouseLeave={() => setHover(null)}
             style={{
               display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
-              background: active ? C.surface : hover === t.id ? C.hover : "transparent",
-              boxShadow: active ? "var(--shadow)" : "none",
-              color: col, borderRadius: 12, padding: "11px 12px", fontSize: 15, fontWeight: 600,
-              position: "relative",
+              background: active ? C.accentSoft : hover === t.id ? C.hover : "transparent",
+              color: active ? C.accentText : hover === t.id ? C.text : C.text,
+              borderRadius: 14, padding: "7px 10px", fontSize: 15, fontWeight: active ? 650 : 550,
               transition: `background .2s ${EASE}, color .2s ${EASE}`,
             }}
           >
-            {active && <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 9, bottom: 9, width: 3, borderRadius: 3, background: C.accent }} />}
-            {t.icon(col)}
+            <span aria-hidden="true" style={{ width: 34, height: 34, borderRadius: 11, display: "grid", placeItems: "center", background: active ? C.accent : "transparent", flexShrink: 0, transition: `background .2s ${EASE}` }}>
+              {t.icon(col)}
+            </span>
             {t.label}
           </Tap>
         );
       })}
       <div style={{ flex: 1 }} />
       <Tap
+        className="focus-ring"
         onClick={onAdd}
-        style={{ width: "100%", background: C.amber, color: C.onAccent, padding: "13px 0", borderRadius: 12, fontSize: 15, fontWeight: 650 }}
+        style={{ width: "100%", background: C.accent, color: C.onAccent, padding: "13px 0", borderRadius: 14, fontSize: 15, fontWeight: 650 }}
       >
         Add a subject
       </Tap>
       <Tap
         className="focus-ring"
         onClick={onImport}
-        style={{ width: "100%", marginTop: 8, background: "transparent", border: `1px solid ${C.lineHi}`, color: C.text, padding: "12px 0", borderRadius: 12, fontSize: 14.5, fontWeight: 600 }}
+        style={{ width: "100%", marginTop: 8, background: "transparent", border: `1px solid ${C.lineHi}`, color: C.text, padding: "12px 0", borderRadius: 14, fontSize: 14.5, fontWeight: 600 }}
       >
         Import portions
       </Tap>
@@ -3007,80 +3203,51 @@ function Sidebar({ screen, go, onAdd, onImport }) {
   );
 }
 
-function TabBar({ screen, go }) {
-  const [open, setOpen] = useState(false);
-  const timer = useRef(null);
-
-  const expand = () => {
-    setOpen(true);
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setOpen(false), 2800);
-  };
-  useEffect(() => () => clearTimeout(timer.current), []);
-
-  const tabs = [
-    { id: "today", label: "Today", icon: Icon.today },
-    { id: "subjects", label: "Subjects", icon: Icon.subjects },
-    { id: "reality", label: "Check", icon: Icon.reality },
-    { id: "timer", label: "Timer", icon: Icon.timer },
-    { id: "settings", label: "Settings", icon: Icon.settings },
-  ];
-  const idx = tabs.findIndex((t) => t.id === screen);
-
+/* Phone: a slim rail down the left, icon over label, the current screen as a
+   filled tile; adding a subject sits at the bottom, under the thumb. */
+function PhoneRail({ screen, go, onAdd }) {
+  const tabs = NAV_TABS.filter((t) => ["today", "subjects", "reality", "timer", "settings"].includes(t.id));
+  const current = { plan: "today", time: "settings" }[screen] ?? navCurrent(screen);
+  const idx = tabs.findIndex((t) => t.id === current);
   return (
-    <div
+    <nav
+      aria-label="Main"
       style={{
-        position: "fixed", bottom: 24, left: 0, right: 0,
-        display: "flex", justifyContent: "center", pointerEvents: "none",
-        zIndex: 50, animation: "barUp .4s cubic-bezier(.32,.72,0,1) both",
+        position: "fixed", top: 0, bottom: 0, left: `max(0px, calc(50% - ${MOBILE_MAX / 2}px))`, width: RAIL_W, zIndex: 40,
+        borderRight: `1px solid ${C.line}`, background: NAV_BG,
+        padding: "22px 0 22px", boxSizing: "border-box",
+        display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
       }}
     >
-      <div
-        className="glass"
-        onPointerDown={expand}
-        style={{
-          pointerEvents: "auto",
-          display: "flex", gap: 3, alignItems: "center",
-          width: open ? "min(398px, calc(100vw - 16px))" : "auto",
-          maxWidth: "calc(100vw - 16px)",
-          background: C.glass,
-          backdropFilter: "blur(26px)", WebkitBackdropFilter: "blur(26px)",
-          border: `1px solid ${C.line}`, borderRadius: 99, padding: 6,
-          boxShadow: "var(--shadow-pop)",
-          boxSizing: "border-box", overflow: "hidden",
-          transition: "width .4s cubic-bezier(.32,.72,0,1)",
-        }}
+      <div style={{ marginBottom: 16 }}><LogoTile size={44} /></div>
+      {tabs.map((t, i) => {
+        const active = t.id === current;
+        return (
+          <Tap
+            key={t.id}
+            className="focus-ring"
+            aria-label={t.label}
+            aria-current={active ? "page" : undefined}
+            onClick={() => { if (screen !== t.id) go(t.id, i >= idx ? "fwd" : "back"); }}
+            style={{ width: 66, background: "transparent", padding: "5px 0 6px", borderRadius: 14, display: "flex", flexDirection: "column", alignItems: "center", gap: 5, color: active ? C.accentText : C.dim }}
+          >
+            <span aria-hidden="true" style={{ width: 44, height: 36, borderRadius: 13, display: "grid", placeItems: "center", background: active ? C.accent : "transparent", boxShadow: active ? "var(--shadow)" : "none", transition: `background .2s ${EASE}` }}>
+              {t.icon(active ? C.onAccent : C.dim)}
+            </span>
+            <span style={{ fontSize: 11, fontWeight: active ? 700 : 550, letterSpacing: "-0.005em", lineHeight: 1 }}>{t.short}</span>
+          </Tap>
+        );
+      })}
+      <div style={{ flex: 1 }} />
+      <Tap
+        className="focus-ring"
+        aria-label="Add a subject"
+        onClick={onAdd}
+        style={{ width: 66, background: "transparent", padding: "4px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 5, color: C.dim }}
       >
-        {tabs.map((t, i) => {
-          const active = t.id === screen;
-          const col = active ? C.accentText : C.dim;
-          return (
-            <Tap
-              key={t.id}
-              onClick={() => { expand(); go(t.id, i > idx ? "fwd" : "back"); }}
-              style={{
-                display: "flex", flexDirection: open ? "column" : "row", alignItems: "center", justifyContent: "center", gap: open ? 2 : 5,
-                flex: open ? "1 1 0" : "0 0 auto", minWidth: 0,
-                background: active ? C.surface : "transparent",
-                borderRadius: open ? 22 : 99, padding: open ? "6px 2px" : "11px 12px", color: col,
-                transition: "background .3s cubic-bezier(.32,.72,0,1), padding .4s cubic-bezier(.32,.72,0,1)",
-              }}
-            >
-              {t.icon(col)}
-              <span
-                style={{
-                  fontSize: 11, fontWeight: 650, color: col,
-                  maxWidth: open ? 72 : 0, maxHeight: open ? 16 : 0, opacity: open ? 1 : 0,
-                  overflow: "hidden", whiteSpace: "nowrap", textOverflow: "clip",
-                  transition: "max-width .4s cubic-bezier(.32,.72,0,1), opacity .3s cubic-bezier(.32,.72,0,1)",
-                }}
-              >
-                {t.label}
-              </span>
-            </Tap>
-          );
-        })}
-      </div>
-    </div>
+        <span aria-hidden="true" style={{ width: 44, height: 44, borderRadius: 14, border: `1.5px dashed ${C.lineHi}`, display: "grid", placeItems: "center", color: C.text, fontSize: 22, fontWeight: 400, lineHeight: 1 }}>+</span>
+        <span style={{ fontSize: 11, fontWeight: 550, lineHeight: 1 }}>Add</span>
+      </Tap>
+    </nav>
   );
 }

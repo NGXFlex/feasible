@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { C, Tap, inputStyle, notice, choice, NumField, useIsDesktop } from "./ui.jsx";
+import { C, Tap, inputStyle, notice, choice, NumField, useIsDesktop, PAGE_PAD } from "./ui.jsx";
 import {
   PRESETS, DEFAULT_MINUTES, MAX_MINUTES, startTimer, remainingMs, isFinished, pauseTimer, resumeTimer,
   minutesSpent, clock, breakMinutes,
@@ -68,7 +68,7 @@ export default function Timer({ s, session, setSession, onLog, onClose }) {
   const primary = { width: "100%", background: C.accent, color: C.onAccent, padding: "17px 0", borderRadius: 16, fontSize: 17, fontWeight: 650 };
   const secondary = { width: "100%", background: "transparent", border: `1px solid ${C.line}`, color: C.text, padding: "15px 0", borderRadius: 16, fontSize: 15, fontWeight: 600 };
   const lbl = { fontSize: 13, color: C.dim, marginBottom: 8, display: "block" };
-  const wrap = { padding: "60px 24px 0", maxWidth: 520, margin: desktop ? "0 auto" : undefined };
+  const wrap = { padding: PAGE_PAD, maxWidth: 520, margin: desktop ? "0 auto" : undefined };
   // started from Today or a subject: a way back there. Started on the Timer tab: the tabs are the way out.
   const back = session.from === "timer" ? null : (
     <Tap className="focus-ring" onClick={onClose} style={{ background: "transparent", color: C.accentText, padding: 0, fontSize: 16, marginBottom: 22, fontWeight: 500 }}>

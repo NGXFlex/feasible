@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { C, EASE, Tap, inputStyle, notice, card, choice, SectionLabel, CardGrid, SP, NumField } from "./ui.jsx";
+import { C, EASE, Tap, inputStyle, notice, card, choice, SectionLabel, CardGrid, SP, NumField, PAGE_PAD } from "./ui.jsx";
 import {
   MAX_PDF_BYTES, MAX_REQUEST_BYTES, MAX_FILES, mimeTypeOf, draftFromPdf, draftChapters, draftIssues, subjectFromDraft,
 } from "./engine/pdfPortions.js";
@@ -188,7 +188,7 @@ export default function ImportPdf({ defaultPace, onCancel, onManual, onSave }) {
   );
 
   return (
-    <div style={{ padding: "60px 24px 0" }}>
+    <div style={{ padding: PAGE_PAD }}>
       <Tap className="focus-ring" onClick={onCancel} style={{ ...textLink, marginBottom: 22 }}>‹ Subjects</Tap>
       <h1 className="rise" style={{ fontSize: 34, fontWeight: 700, letterSpacing: -1, margin: "0 0 6px" }}>Import portions</h1>
 

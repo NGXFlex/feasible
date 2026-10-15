@@ -41,7 +41,10 @@ export const C = {
 export const EASE = "cubic-bezier(.32,.72,0,1)";
 
 export const FONT =
-  '-apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif';
+  '"Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif';
+/* headings and the big numbers: the same family, cut tighter */
+export const DISPLAY =
+  '"Inter Tight", "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif';
 
 /* Any extra props (type, className, aria-*) pass straight through to the
    <button>. type defaults to "button" so a Tap inside a <form> never
@@ -132,12 +135,15 @@ export function Mark({ size = 20, style }) {
 }
 
 /* ---------------------------- layout ----------------------------
-   Phones get the original single column with the floating tab bar.
-   From DESKTOP_MIN wide, the app switches to a sidebar on the left and
-   a wider content column on the right; sheets become centred dialogs. */
+   Phones get one column with a slim navigation rail down the left.
+   From DESKTOP_MIN wide, the app switches to a labelled sidebar and a
+   wider, multi-column content area; sheets become centred dialogs. */
 export const DESKTOP_MIN = 900;
 export const SPLIT_MIN = 1100;    // Plan, Time, Detail: main 62% / side 38%
-export const SIDEBAR_W = 240;
+export const SIDEBAR_W = 256;
+export const RAIL_W = 76;         // the phone's navigation rail
+/* every screen's outer padding; the values are set per layout on the app's root */
+export const PAGE_PAD = "var(--page-top, 60px) var(--gutter, 24px) 0";
 export const CONTENT_MAX = 1240;  // content column on desktop
 export const MOBILE_MAX = 430;    // the phone column
 
@@ -195,23 +201,27 @@ export function Split({ main, side }) {
 /* Small uppercase label above a group of cards */
 export function SectionLabel({ children, style }) {
   return (
-    <div style={{ fontSize: 11, fontWeight: 650, letterSpacing: ".08em", textTransform: "uppercase", color: C.dim, margin: "0 0 10px 2px", ...style }}>
+    <div style={{ fontSize: 11.5, fontWeight: 650, letterSpacing: ".1em", textTransform: "uppercase", color: C.dim, margin: "0 0 12px 2px", ...style }}>
       {children}
     </div>
   );
 }
 
 /* ----------------------------- surfaces ----------------------------- */
+/* A soft 6% wash of a semantic colour ("accent", "shortfall" or "fits")
+   from the bottom-right: the corner opposite the page's own wash
+   (Backdrop), so cards lift off the background */
+const wash = (kind) => `radial-gradient(130% 120% at 100% 100%, var(--wash-${kind}), transparent 62%), ${C.surface}`;
+
+/* every card's background: the surface with a slight accent wash */
+export const CARD_BG = wash("accent");
+
 export const card = {
-  background: C.surface, border: `1px solid ${C.line}`, borderRadius: 18, padding: SP.card,
+  background: CARD_BG, border: `1px solid ${C.line}`, borderRadius: 20, padding: SP.card,
 };
 
-/* A soft 6% wash of a semantic colour from the top-left:
-   "accent", "shortfall" or "fits" */
-const wash = (kind) => `radial-gradient(120% 100% at 0% 0%, var(--wash-${kind}), transparent 62%), ${C.surface}`;
-
 export const hero = (kind = "accent") => ({
-  background: wash(kind), border: `1px solid ${C.line}`, borderRadius: 22, padding: SP.hero,
+  background: wash(kind), border: `1px solid ${C.line}`, borderRadius: 24, padding: SP.hero,
 });
 
 /* A status card tinted like a hero, at standard card size */

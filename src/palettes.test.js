@@ -8,8 +8,8 @@ test("palettes: palettes.css is up to date with palettes.js (npm run palettes)",
   assert.equal(readFileSync(new URL("./palettes.css", import.meta.url), "utf8").replace(/\r\n/g, "\n"), paletteCss());
 });
 
-test("palettes: five palettes, each with a light and a dark set", () => {
-  assert.deepEqual(PALETTES.map((p) => p.id), ["sand", "cobalt", "coral", "lime", "lavender"]);
+test("palettes: ten palettes, each with a light and a dark set", () => {
+  assert.deepEqual(PALETTES.map((p) => p.id), ["sand", "cobalt", "coral", "lime", "lavender", "sage", "copper", "mono", "hydra", "aureus"]);
   for (const p of PALETTES) for (const m of ["light", "dark"]) {
     for (const k of ["bg", "surface", "raised", "line", "lineHi", "text", "dim", "accent", "accentSoft"]) {
       assert.match(p[m][k], /^#[0-9A-F]{6}$/, `${p.id} ${m} ${k}`);
