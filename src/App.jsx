@@ -6,94 +6,27 @@ import {
 } from "./ui.jsx";
 import Login from "./Login.jsx";
 import { SYLLABI, getSyllabus, readinessFactor, dailyNeed, planForTarget, exerciseMinutes, MODEL } from "./engine/syllabusEngine.js";
-import { parsePortions, WEIGHTS, DEFAULT_WEIGHT, marksFromWeights } from "./engine/portions.js";
-import { shareDays } from "./engine/schedule.js";
+import { parsePortions, WEIGHTS, DEFAULT_WEIGHT } from "./engine/portions.js";
+import {
+  TYPE_META, PACE, paceMult, DIFF_MULT, diffMult, toDate, addDays, key, daysUntil,
+  defaultHours, hoursBetween, analysePlan,
+} from "./engine/plan.js";
 
 
 /* ------------------------------------------------------------------ */
 
-const TYPE_META = {
-  theory: { label: "Theory", base: 2.0, phases: [0.5, 0.2, 0.3] },
-  problem: { label: "Problem", base: 2.5, phases: [0.3, 0.5, 0.2] },
-  memory: { label: "Memory", base: 1.5, phases: [0.35, 0.15, 0.5] },
-};
-const PHASE_NAMES = ["Learn", "Practice", "Revise"];
 const PHASE_COLORS = [C.accent, C.info, C.lineHi];
 
-const PACE = [
-  { id: "quick", label: "Quick", sub: "I get through a chapter fast", mult: 0.78 },
-  { id: "steady", label: "Steady", sub: "About average for my class", mult: 1.0 },
-  { id: "thorough", label: "Thorough", sub: "I need longer per chapter", mult: 1.32 },
-];
-const paceMult = (id) => (PACE.find((p) => p.id === id) ?? PACE[1]).mult;
-
 const DIFF = [
-  { v: 1, label: "Easy", mult: 0.78, color: C.info },
-  { v: 2, label: "Medium", mult: 1.0, color: C.dim },
-  { v: 3, label: "Hard", mult: 1.4, color: C.accentText },
+  { v: 1, label: "Easy", mult: DIFF_MULT[1], color: C.info },
+  { v: 2, label: "Medium", mult: DIFF_MULT[2], color: C.dim },
+  { v: 3, label: "Hard", mult: DIFF_MULT[3], color: C.accentText },
 ];
-const diffMult = (v) => (DIFF.find((d) => d.v === v) ?? DIFF[1]).mult;
 const diffMeta = (v) => DIFF.find((d) => d.v === v) ?? DIFF[1];
-const dayMs = 86400000;
 const STORE_KEY = "feasible-state-v1";
 
-const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
-const addDays = (d, n) => new Date(startOfDay(d).getTime() + n * dayMs);
-const key = (d) => {
-  const x = startOfDay(d);
-  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
-};
-const fmtDate = (d) => new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
-const fmtDay = (d) => new Date(d).toLocaleDateString("en-IN", { weekday: "short" });
-const daysUntil = (d) => Math.max(0, Math.round((startOfDay(d) - startOfDay(new Date())) / dayMs));
-
-const defaultHours = (d, wd, we) => {
-  const g = new Date(d).getDay();
-  return g === 0 || g === 6 ? we : wd;
-};
-
-function hoursBetween(from, to, wd, we, ov) {
-  let total = 0;
-  let cur = startOfDay(from);
-  const end = startOfDay(to);
-  let guard = 0;
-  while (cur < end && guard++ < 800) {
-    const k = key(cur);
-    total += k in ov ? ov[k] : defaultHours(cur, wd, we);
-    cur = addDays(cur, 1);
-  }
-  return total;
-}
-
-/* days between from and to that have any study time in them */
-function studyDaysBetween(from, to, wd, we, ov) {
-  let n = 0;
-  let cur = startOfDay(from);
-  const end = startOfDay(to);
-  let guard = 0;
-  while (cur < end && guard++ < 800) {
-    const k = key(cur);
-    if ((k in ov ? ov[k] : defaultHours(cur, wd, we)) > 0) n++;
-    cur = addDays(cur, 1);
-  }
-  return n;
-}
-
-/* first and last day with study time in them, from `from` up to (not
-   including) `to`; null when there are none */
-function studyWindow(from, to, wd, we, ov) {
-  let first = null, last = null;
-  let cur = startOfDay(from);
-  const end = startOfDay(to);
-  let guard = 0;
-  while (cur < end && guard++ < 800) {
-    const k = key(cur);
-    if ((k in ov ? ov[k] : defaultHours(cur, wd, we)) > 0) { first ??= cur; last = cur; }
-    cur = addDays(cur, 1);
-  }
-  return { first, last };
-}
-
+const fmtDate = (d) => toDate(d).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+const fmtDay = (d) => toDate(d).toLocaleDateString("en-IN", { weekday: "short" });
 /* ------------------------- persistence -------------------------
    Firestore is the system of record. A local copy is always kept as
    well, so the app opens instantly and still works with no internet.
@@ -591,131 +524,15 @@ export default function App() {
     flash("Signed out");
   };
 
-  const analysis = useMemo(() => {
-    const sorted = [...subjects].sort((a, b) => new Date(a.date) - new Date(b.date));
-    if (!sorted.length) return [];
-
-    /* ---- 1. what each subject costs ---- */
-    const base = sorted.map((s) => {
-      const meta = TYPE_META[s.type] ?? TYPE_META.theory;
-      const diffs = s.diff ?? Array(s.chapters).fill(2);
-      const doneCount = s.done.filter(Boolean).length;
-      const remaining = s.chapters - doneCount;
-      // how many times the expected hours this student needs, from confidence + last score
-      const factor = readinessFactor(s.confidence, s.lastScore);
-      const pm = paceMult(s.pace ?? pace);
-      const baseChapter = meta.base * factor.factor * pm;
-      const syl = s.syllabus ? getSyllabus(s.syllabus) : null;
-      // no syllabus but a weightage per chapter: split a 100-mark paper by weight
-      const chapterMarks = !syl && Array.isArray(s.weight) ? marksFromWeights(s.weight, s.chapters) : null;
-      let raw = 0;
-      let marks = 0, marksLeft = 0;
-      const costs = [];
-      const outstanding = [];
-      for (let i = 0; i < s.chapters; i++) {
-        const d = diffs[i] ?? 2;
-        const ch = syl?.byId[s.refs?.[i]];
-        // a syllabus chapter starts from its own estimate (questions, examples,
-        // concept); re-marking its difficulty scales it from there
-        const cost = ch
-          ? ch.hours.total * (diffMult(d) / diffMult(ch.diff)) * factor.factor * pm
-          : baseChapter * diffMult(d);
-        costs[i] = cost;
-        const m = ch ? ch.marksEst : chapterMarks?.[i];
-        if (m != null) { marks += m; if (!s.done[i]) marksLeft += m; }
-        if (s.done[i]) continue;
-        raw += cost;
-        outstanding.push({ i, d, cost, name: s.names?.[i] || `Chapter ${i + 1}` });
-      }
-      return {
-        s, meta, diffs, doneCount, remaining, baseChapter, raw, factor, costs, syl, pm, chapterMarks,
-        marks: syl || chapterMarks ? marks : null, marksLeft: syl || chapterMarks ? marksLeft : null,
-        need: Math.max(0, raw - s.logged), outstanding,
-      };
-    });
-
-    /* ---- 2. day-by-day simulation (engine/schedule.js) ---- */
-    const hoursOn = (d) => { const k = key(d); return k in ov ? ov[k] : defaultHours(d, wd, we); };
-    const sim = shareDays(base.map((b) => ({ need: b.need, date: b.s.date })), hoursOn, new Date());
-    const spare = sim.spare;
-
-    /* ---- 3. per-subject results ---- */
-    return base.map((b, i) => {
-      const { days, allocated, available } = sim.subjects[i];
-      // the subject's window is every study day from today to its exam,
-      // whether or not it still needs any of them
-      const today = new Date();
-      const studyDays = studyDaysBetween(today, b.s.date, wd, we, ov);
-      const { first, last } = studyWindow(today, b.s.date, wd, we, ov);
-      const windowStart = first ?? startOfDay(today);
-      const windowEnd = last ?? startOfDay(b.s.date);
-      const windowDays = studyDays;
-
-      /* phases split the hours this subject is given, over the days it gets them */
-      const phases = [];
-      let idx = 0, acc = 0, mark = 0;
-      b.meta.phases.forEach((p, pi) => {
-        const last = pi === b.meta.phases.length - 1;
-        const reserve = b.meta.phases.length - pi - 1;
-        const target = mark + allocated * p;
-        const startIdx = idx;
-        if (last) {
-          idx = days.length;
-        } else {
-          while (
-            idx < days.length - reserve &&
-            (idx === startIdx || acc + days[idx].h / 2 <= target + 1e-9)
-          ) { acc += days[idx].h; idx++; }
-        }
-        const slice = days.slice(startIdx, idx);
-        const hrs = slice.reduce((t, x) => t + x.h, 0);
-        phases.push({
-          name: PHASE_NAMES[pi],
-          from: slice[0]?.d ?? null,
-          to: slice[slice.length - 1]?.d ?? null,
-          days: slice.length,
-          hours: hrs,
-          pct: allocated ? (hrs / allocated) * 100 : 0,
-        });
-        mark = target;
-      });
-
-      const priority = [...b.outstanding].sort((x, y) => y.d - x.d || x.i - y.i).slice(0, 3);
-
-      const startAnchor = startOfDay(b.s.createdAt ?? new Date());
-      const span = Math.max(1, (startOfDay(b.s.date) - startAnchor) / dayMs);
-      const elapsed = Math.min(span, Math.max(0, (startOfDay(new Date()) - startAnchor) / dayMs));
-      const expected = Math.round(b.s.chapters * (elapsed / span));
-
-      /* daily load: this subject's remaining hours over the study days left
-         before its exam, next to what an average one of those days holds */
-      const perDay = dailyNeed(b.need, studyDays);
-      const havePerDay = studyDays ? hoursBetween(today, b.s.date, wd, we, ov) / studyDays : null;
-
-      return {
-        ...b.s, meta: b.meta, diffs: b.diffs, doneCount: b.doneCount,
-        remaining: b.remaining, baseChapter: b.baseChapter,
-        perChapter: b.remaining ? b.raw / b.remaining : b.baseChapter,
-        raw: b.raw, needed: b.need, available,
-        windowStart, windowEnd, windowDays, phases, priority,
-        // a phase with no days only matters while there's work left
-        squeezed: b.need > 0 ? phases.filter((x) => x.days === 0).length : 0,
-        gap: available - b.need,
-        totalSpare: spare,
-        expected, behind: expected - b.doneCount,
-        factor: b.factor, costs: b.costs, syl: b.syl, marks: b.marks, marksLeft: b.marksLeft, pm: b.pm,
-        chapterMarks: b.chapterMarks,
-        studyDays, perDay, havePerDay,
-        overconfident: b.factor.overconfident,
-      };
-    });
-  }, [subjects, wd, we, ov, pace]);
+  const plan = useMemo(() => analysePlan(subjects, { wd, we, ov, pace }), [subjects, wd, we, ov, pace]);
+  const analysis = plan.subjects;
+  const passed = plan.passed;
 
   const worst = analysis.reduce((a, b) => (b.gap < (a?.gap ?? Infinity) ? b : a), null);
   const totalShort = analysis.reduce((t, s) => t + Math.min(0, s.gap), 0);
-  const totalSpare = analysis[0]?.totalSpare ?? 0;
+  const totalSpare = plan.spare;
   const lastExam = subjects.length
-    ? subjects.reduce((a, b) => (new Date(b.date) > new Date(a) ? b.date : a), subjects[0].date)
+    ? subjects.reduce((a, b) => (toDate(b.date) > toDate(a) ? b.date : a), subjects[0].date)
     : key(addDays(new Date(), 14));
 
   const patch = (id, changes) =>
@@ -723,8 +540,14 @@ export default function App() {
 
   const toggleChapter = (id, i) =>
     setSubjects((p) =>
-      p.map((s) => (s.id === id ? { ...s, done: s.done.map((d, j) => (j === i ? !d : d)) } : s))
+      // built to the chapter count, so a short saved list never swallows a tick
+      p.map((s) => (s.id === id ? { ...s, done: Array.from({ length: s.chapters }, (_, j) => (j === i ? !s.done?.[j] : !!s.done?.[j])) } : s))
     );
+
+  const passedActions = {
+    onUpdate: (s) => setSheet({ mode: "edit", subject: s }),
+    onRemove: (s) => { setSubjects((p) => p.filter((x) => x.id !== s.id)); flash(`${s.name} removed`); },
+  };
 
   const removeSubject = (id) => {
     const name = subjects.find((s) => s.id === id)?.name;
@@ -808,12 +631,12 @@ export default function App() {
           />
         )}
         {screen === "subjects" && (
-          <Subjects sync={sync} data={analysis} onOpen={(id) => { setOpenId(id); go("detail"); }}
+          <Subjects sync={sync} data={analysis} passed={passed} passedActions={passedActions} onOpen={(id) => { setOpenId(id); go("detail"); }}
             onAdd={() => setSheet({ mode: "add" })}
             onSample={() => { setSubjects(sampleSubjects()); flash("Sample subjects loaded"); }} />
         )}
         {screen === "reality" && (
-          <Reality data={analysis} worst={worst} totalShort={totalShort} totalSpare={totalSpare}
+          <Reality data={analysis} passed={passed} passedActions={passedActions} worst={worst} totalShort={totalShort} totalSpare={totalSpare}
             onSetLog={(id, v) => {
               patch(id, { logged: Math.max(0, v) });
               flash("Changes confirmed");
@@ -1269,6 +1092,57 @@ function ThemeCard({ value, onChange }) {
 }
 
 /* --------------------------- SUBJECTS --------------------------- */
+const dateChip = {
+  display: "inline-block", fontSize: 12.5, fontWeight: 650, color: C.text, lineHeight: 1.3,
+  background: C.raised, border: `1px solid ${C.lineHi}`, borderRadius: 99, padding: "2px 9px",
+};
+
+/* A subject's name; when another subject has the same name, its exam
+   date sits right beside it so the two can be told apart. */
+function SubjectName({ s }) {
+  return (
+    <span style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, fontSize: 15, fontWeight: 600 }}>
+      {s.name}
+      {s.sameName && <span style={dateChip}>{fmtDate(s.date)}</span>}
+    </span>
+  );
+}
+
+/* Subjects whose exam is over: kept out of every calculation, shown dim,
+   with a way to clear them out or move the date. */
+function PassedList({ passed, onUpdate, onRemove }) {
+  const [arm, setArm] = useState(null);
+  if (!passed.length) return null;
+  return (
+    <div style={{ marginTop: SP.section }}>
+      <SectionLabel>Exam passed</SectionLabel>
+      <CardGrid>
+        {passed.map((s) => (
+          <div key={s.id} className="rise" style={{ ...card, background: "transparent", borderStyle: "dashed", borderColor: C.lineHi }}>
+            <div style={{ color: C.dim }}>
+              <SubjectName s={s} />
+              <div style={{ fontSize: 13, marginTop: 4 }}>Exam passed — {fmtDate(s.date)}</div>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <Tap className="focus-ring" onClick={() => onUpdate(s)} style={{ flex: 1, background: C.raised, color: C.text, border: `1px solid ${C.line}`, padding: "10px 0", borderRadius: 12, fontSize: 13.5, fontWeight: 600 }}>
+                Update date
+              </Tap>
+              <Tap
+                className="focus-ring"
+                onClick={() => (arm === s.id ? onRemove(s) : setArm(s.id))}
+                onPointerLeave={() => setArm(null)}
+                style={{ flex: 1, background: arm === s.id ? C.accent : "transparent", color: arm === s.id ? C.onAccent : C.dim, border: `1px solid ${arm === s.id ? C.accent : C.line}`, padding: "10px 0", borderRadius: 12, fontSize: 13.5, fontWeight: 600 }}
+              >
+                {arm === s.id ? "Tap again to remove" : "Remove"}
+              </Tap>
+            </div>
+          </div>
+        ))}
+      </CardGrid>
+    </div>
+  );
+}
+
 function SyncChip({ sync }) {
   const map = {
     cloud:   { dot: C.info, text: "Synced to cloud" },
@@ -1292,13 +1166,13 @@ function SyncChip({ sync }) {
   );
 }
 
-function Subjects({ data, onOpen, onAdd, onSample, sync }) {
+function Subjects({ data, passed, passedActions, onOpen, onAdd, onSample, sync }) {
   const desktop = useIsDesktop();
   return (
     <div style={{ padding: "60px 24px 0" }}>
       <Header title="Subjects" sub={`${data.length} exam${data.length === 1 ? "" : "s"} ahead`} />
       <SyncChip sync={sync} />
-      {data.length === 0 && (
+      {data.length === 0 && passed.length === 0 && (
         <div className="rise card" style={hero("accent")}>
           <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5 }}>Get started</div>
           <div style={{ color: C.dim, fontSize: 14.5, lineHeight: 1.6, marginTop: 10 }}>
@@ -1337,8 +1211,8 @@ function Subjects({ data, onOpen, onAdd, onSample, sync }) {
               <div style={{ width: 4, background: s.gap < -0.5 ? C.shortfall : C.fits, flexShrink: 0 }} />
               <div style={{ padding: SP.card, flex: 1 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>{s.name}</div>
-                  <div style={{ fontSize: 13, color: C.dim }}>{fmtDate(s.date)}</div>
+                  <SubjectName s={s} />
+                  {!s.sameName && <div style={{ fontSize: 13, color: C.dim }}>{fmtDate(s.date)}</div>}
                 </div>
                 <div style={{ marginTop: 8, fontSize: 14, color: s.gap < -0.5 ? C.shortfall : C.fits, fontWeight: 600 }}>
                   {s.gap < -0.5 ? `${Math.round(-s.gap)}h short` : `${Math.round(s.gap)}h spare`}
@@ -1357,7 +1231,8 @@ function Subjects({ data, onOpen, onAdd, onSample, sync }) {
           </Tap>
         ))}
       </CardGrid>
-      {data.length > 0 && (
+      <PassedList passed={passed} {...passedActions} />
+      {(data.length > 0 || passed.length > 0) && (
         <>
           <Tap onClick={onAdd} style={{ width: "100%", marginTop: SP.group, background: "transparent", border: `1px dashed ${C.lineHi}`, color: C.dim, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 500 }}>
             Add a subject
@@ -1372,7 +1247,7 @@ function Subjects({ data, onOpen, onAdd, onSample, sync }) {
 }
 
 /* ---------------------------- REALITY ---------------------------- */
-function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
+function Reality({ data, passed, passedActions, worst, totalShort, totalSpare, onSetLog }) {
   const short = Math.round(-totalShort);
   const spare = Math.round(totalSpare);
   const n = useCountUp(short > 0 ? short : spare);
@@ -1402,7 +1277,7 @@ function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
         </div>
       </div>
 
-      <SectionLabel>By subject</SectionLabel>
+      {data.length > 0 && <SectionLabel>By subject</SectionLabel>}
       <CardGrid align="start">
         {data.map((s, i) => {
           const max = Math.max(s.needed, s.available) || 1;
@@ -1411,7 +1286,7 @@ function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
             <div className="card" key={s.id} style={{ ...card, animation: `rise .5s ${EASE} ${0.08 * i + 0.1}s both` }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>{s.name}</div>
+                  <SubjectName s={s} />
                   <div style={{ fontSize: 12.5, color: C.dim, marginTop: 4 }}>
                     {key(s.windowStart) === key(new Date()) ? "Today" : fmtDate(s.windowStart)} – {fmtDate(s.date)} · {s.windowDays} study day{s.windowDays === 1 ? "" : "s"}
                   </div>
@@ -1434,6 +1309,8 @@ function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
           You rated <b style={{ color: C.accentText }}>{s.name}</b> easy, but your last score was {s.lastScore}%. Confidence and marks disagree — that gap is usually where results get lost.
         </div>
       ))}
+
+      <PassedList passed={passed} {...passedActions} />
     </div>
   );
 }
@@ -1471,7 +1348,7 @@ function urgencyTag(s) {
 }
 
 function SubjectOrder({ data }) {
-  const ranked = [...data].sort((a, b) => urgencyOf(b) - urgencyOf(a) || new Date(a.date) - new Date(b.date));
+  const ranked = [...data].sort((a, b) => urgencyOf(b) - urgencyOf(a) || toDate(a.date) - toDate(b.date));
   return (
     <div className="rise card" style={{ ...card, marginBottom: SP.group }}>
       <div style={{ fontSize: 15, fontWeight: 600 }}>Do these in this order</div>
@@ -1482,7 +1359,7 @@ function SubjectOrder({ data }) {
             <li key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: k ? `1px solid ${C.line}` : "none" }}>
               <span style={{ width: 18, flexShrink: 0, color: C.dim, fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{k + 1}</span>
               <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ display: "block", fontSize: 15, fontWeight: 600 }}>{s.name}</span>
+                <SubjectName s={s} />
                 <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
                   {s.perDay != null ? `${s.perDay.toFixed(1)}h a day` : "no study days left"} · exam {fmtDate(s.date)}
                 </span>
@@ -1553,7 +1430,7 @@ function Plan({ data }) {
             <Tap onClick={() => setOpen(isOpen ? null : s.id)} style={{ width: "100%", background: "transparent", color: C.text, padding: SP.card, textAlign: "left" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>{s.name}</div>
+                  <SubjectName s={s} />
                   <div style={{ fontSize: 13, color: s.behind > 0 ? C.accentText : C.dim, marginTop: 4 }}>
                     {s.behind > 0 ? `${s.behind} chapter${s.behind === 1 ? "" : "s"} behind pace` : "On pace"}
                     <span style={{ color: C.dim }}> · {fmtDate(s.windowStart)}–{fmtDate(s.date)} · {Math.round(s.available)}h</span>
@@ -1647,7 +1524,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
   useEffect(() => { setOverlay(editing || orderFor != null); return () => setOverlay(false); }, [editing, orderFor]);
 
   if (!s) return null;
-  const pct = (s.doneCount / s.chapters) * 100;
+  const pct = s.chapters ? (s.doneCount / s.chapters) * 100 : 0;
 
   /* Fastest way to the target score. Chapters left off this subject when it
      was added count as covered (the picker asks for what's still to do). */
@@ -1728,7 +1605,16 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
         </div>
       </div>
 
-      {s.perDay != null && s.needed <= 0 && (
+      {s.chapters === 0 && (
+        <div className="rise card" style={{ ...card, marginBottom: SP.group, animationDelay: ".05s" }}>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>No chapters yet</div>
+          <div style={{ fontSize: 13, color: C.dim, marginTop: 6, lineHeight: 1.5 }}>
+            Add them with Edit chapters to see how many hours this subject needs.
+          </div>
+        </div>
+      )}
+
+      {s.chapters > 0 && s.perDay != null && s.needed <= 0 && (
         <div className="rise card" style={{ ...hero("fits"), marginBottom: SP.group, animationDelay: ".05s" }}>
           <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5, color: C.fits }}>
             {s.remaining === 0 ? "Nothing left — all chapters done" : "Nothing left — your logged hours cover the rest"}
@@ -1955,7 +1841,10 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
         ‹ Subjects
       </Tap>
 
-      <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: -1, margin: "0 0 6px" }}>{s.name}</h1>
+      <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: -1, margin: "0 0 6px" }}>
+        {s.name}
+        {s.sameName && <span style={{ ...dateChip, fontSize: 15, verticalAlign: "middle", marginLeft: 10 }}>{fmtDate(s.date)}</span>}
+      </h1>
       <div style={{ color: C.dim, fontSize: 15 }}>
         {s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · exam {fmtDate(s.date)} · {s.meta.label}-heavy
       </div>
@@ -2680,8 +2569,8 @@ function TabBar({ screen, go }) {
         style={{
           pointerEvents: "auto",
           display: "flex", gap: 3, alignItems: "center",
-          width: open ? "min(398px, calc(100vw - 28px))" : "auto",
-          maxWidth: "calc(100vw - 28px)",
+          width: open ? "min(398px, calc(100vw - 16px))" : "auto",
+          maxWidth: "calc(100vw - 16px)",
           background: C.glass,
           backdropFilter: "blur(26px)", WebkitBackdropFilter: "blur(26px)",
           border: `1px solid ${C.line}`, borderRadius: 99, padding: 6,
@@ -2698,17 +2587,17 @@ function TabBar({ screen, go }) {
               key={t.id}
               onClick={() => { expand(); go(t.id, i > idx ? "fwd" : "back"); }}
               style={{
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
                 flex: open ? "1 1 0" : "0 0 auto", minWidth: 0,
                 background: active ? C.surface : "transparent",
-                borderRadius: 99, padding: open ? "11px 6px" : "11px 13px", color: col,
+                borderRadius: 99, padding: open ? "11px 4px" : "11px 13px", color: col,
                 transition: "background .3s cubic-bezier(.32,.72,0,1), padding .4s cubic-bezier(.32,.72,0,1)",
               }}
             >
               {t.icon(col)}
               <span
                 style={{
-                  fontSize: 12.5, fontWeight: 650, color: col,
+                  fontSize: 12, fontWeight: 650, color: col,
                   maxWidth: open ? 72 : 0, opacity: open ? 1 : 0,
                   overflow: "hidden", whiteSpace: "nowrap", textOverflow: "clip",
                   transition: "max-width .4s cubic-bezier(.32,.72,0,1), opacity .3s cubic-bezier(.32,.72,0,1)",

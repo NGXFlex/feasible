@@ -34,14 +34,49 @@ test("schedule: a short subject shows the gap", () => {
   assert.ok(near(s.allocated, 30));
 });
 
-test("schedule: no hour is given out twice, and spare only counts before each exam", () => {
-  const { subjects: [a, b], spare } = shareDays(
+test("schedule: no hour is given out twice", () => {
+  const { subjects: [a, b], spare, capacity } = shareDays(
     [{ need: 6, date: day(4) }, { need: 10, date: day(10) }], () => 4, today,
   );
-  assert.ok(a.allocated + b.allocated + spare <= 40 + 1e-6);
+  assert.ok(near(capacity, 40));
   assert.ok(near(a.allocated + b.allocated + spare, 40));
-  assert.ok(a.spareBefore <= b.spareBefore);   // a's window is a slice of b's
-  assert.ok(near(b.available, 10 + spare));
+  assert.ok(near(a.available + b.available, 40));
+});
+
+const gaps = (subjects, needs) => subjects.map((s, i) => s.available - needs[i]);
+const positive = (g) => g.filter((x) => x > 1e-9).reduce((t, x) => t + x, 0);
+
+test("schedule: spare is shared, not credited to every subject", () => {
+  // three light subjects on the same 52h of capacity: each used to show the
+  // whole leftover as its own
+  const needs = [8, 9, 9];
+  const run = shareDays(needs.map((need, i) => ({ need, date: day(13 + i) })), () => 3.5, today);
+  const g = gaps(run.subjects, needs);
+  assert.ok(near(positive(g), run.spare));
+  assert.ok(g.every((x) => x < run.spare - 1));   // nobody holds all of it
+});
+
+test("schedule: positive gaps add up to the total spare, with some subjects short", () => {
+  const cases = [
+    { needs: [30, 4, 12], dates: [3, 9, 20], hours: () => 3 },
+    { needs: [0, 25, 6, 40], dates: [5, 6, 12, 15], hours: (d) => (d.getDay() % 6 === 0 ? 6 : 2) },
+    { needs: [10, 10], dates: [5, 5], hours: (d) => (d.getTime() === today.getTime() ? 12 : 0.5) },
+  ];
+  for (const c of cases) {
+    const run = shareDays(c.needs.map((need, i) => ({ need, date: day(c.dates[i]) })), c.hours, today);
+    const g = gaps(run.subjects, c.needs);
+    assert.ok(near(positive(g), run.spare), `${positive(g)} vs ${run.spare}`);
+    // nothing is short while also holding spare
+    run.subjects.forEach((s, i) => { if (g[i] < -1e-9) assert.ok(near(s.spare, 0)); });
+  }
+});
+
+test("schedule: what each subject has adds up to the real capacity", () => {
+  const needs = [8, 14, 30];
+  const run = shareDays(needs.map((need) => ({ need, date: day(15) })), () => 3.5, today);
+  const total = run.subjects.reduce((t, s) => t + s.available, 0);
+  assert.ok(near(total, run.capacity));
+  assert.ok(near(run.capacity, 52.5));
 });
 
 test("schedule: unused hours early in the window still count", () => {

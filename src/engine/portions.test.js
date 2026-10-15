@@ -30,3 +30,10 @@ test("weights: split 100 marks in proportion, missing weights count as Medium", 
   assert.deepEqual(marksFromWeights([3, 2, 1, 2]), [37.5, 25, 12.5, 25]);
   assert.deepEqual(marksFromWeights([3], 2), [60, 40]);
 });
+
+test("portions: drops trailing separators and handles messy pasted text", () => {
+  assert.deepEqual(
+    names("   \r\n7. Coordination Compounds;\r\n9.Alcohols, Phenols & Ethers,\r\n\t• Surface Chemistry.\r\n1.\r\n•\r\nCh. 12 Amines\r\n13 — Biomolecules"),
+    ["Coordination Compounds", "Alcohols, Phenols & Ethers", "Surface Chemistry", "Amines", "Biomolecules"],
+  );
+});

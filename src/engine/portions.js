@@ -24,7 +24,8 @@ export function parsePortions(text) {
   String(text ?? "").split(/\r?\n/).forEach((raw, line) => {
     const trimmed = raw.trim();
     if (!trimmed || HEADING_WORD.test(trimmed)) return;
-    const name = trimmed.replace(LEAD, "").trim();
+    // trailing separators ("Coordination Compounds;") aren't part of the name
+    const name = trimmed.replace(LEAD, "").replace(/[\s;,:.]+$/, "").trim();
     if (!name || isHeading(name)) return;
     out.push({ name, line });
   });
