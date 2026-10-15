@@ -2,16 +2,20 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   C, FONT, EASE, Tap, inputStyle, useIsDesktop, useSplit, sheetOverlay, sheetPanel, SheetHandle,
   SIDEBAR_W, CONTENT_MAX, MOBILE_MAX, SP, THEMES, useTheme, Mark, CardGrid, Split, SectionLabel,
-  card, hero, tinted, notice, choice,
+  card, hero, tinted, notice, choice, NumField,
 } from "./ui.jsx";
 import Login from "./Login.jsx";
+import ImportPdf from "./ImportPdf.jsx";
+import Timer, { readSession, writeSession, sessionActive, newSession } from "./Timer.jsx";
 import { SYLLABI, getSyllabus, readinessFactor, dailyNeed, planForTarget, exerciseMinutes, MODEL } from "./engine/syllabusEngine.js";
 import { parsePortions, WEIGHTS, DEFAULT_WEIGHT } from "./engine/portions.js";
-import { MAX_PDF_BYTES, MAX_REQUEST_BYTES } from "./engine/pdfPortions.js";
 import {
   TYPE_META, PACE, paceMult, DIFF_MULT, diffMult, toDate, addDays, key, daysUntil,
-  defaultHours, hoursBetween, analysePlan,
+  defaultHours, hoursBetween, analysePlan, todayPlan, rankByUrgency, urgencyOf,
 } from "./engine/plan.js";
+import { migrateLog, setLoggedTotal, addLog } from "./engine/log.js";
+import { fmtH } from "./engine/format.js";
+import { rowsFromSubject, resizeRows, removeRow, applyRows } from "./engine/chapters.js";
 
 
 /* ------------------------------------------------------------------ */
@@ -181,7 +185,7 @@ function sampleSubjects() {
     confidence,
     lastScore,
     pace: pace ?? "steady",
-    logged: 0,
+    log: [],
     names: chapterNames ?? Array(chapters).fill(""),
     diff: Array(chapters).fill(2),
     done: Array(chapters).fill(false),
@@ -226,34 +230,6 @@ const roundBtn = {
 };
 const smallBtn = { ...roundBtn, width: 30, height: 30, fontSize: 16 };
 
-/* number field you can actually clear while typing */
-function NumField({ value, onChange, min = 0, max = 9999, style, placeholder }) {
-  const [t, setT] = useState(String(value));
-  useEffect(() => { setT(String(value)); }, [value]);
-  const clamp = (n) => Math.min(max, Math.max(min, n));
-  return (
-    <input
-      inputMode="decimal"
-      value={t}
-      placeholder={placeholder}
-      onFocus={(e) => e.target.select()}
-      onChange={(e) => {
-        const raw = e.target.value.replace(/[^0-9.]/g, "");
-        setT(raw);
-        const n = parseFloat(raw);
-        if (!isNaN(n)) onChange(clamp(n));
-      }}
-      onBlur={() => {
-        const n = parseFloat(t);
-        const v = isNaN(n) ? min : clamp(n);
-        onChange(v);
-        setT(String(v));
-      }}
-      style={style}
-    />
-  );
-}
-
 /* hours-studied slider with an explicit confirm */
 function HoursSlider({ s, onCommit }) {
   const [v, setV] = useState(s.logged);
@@ -268,7 +244,7 @@ function HoursSlider({ s, onCommit }) {
           <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>Comes off what you still need</div>
         </div>
         <div style={{ fontSize: 22, fontWeight: 700, color: dirty ? C.accentText : C.text, fontVariantNumeric: "tabular-nums", letterSpacing: -0.6 }}>
-          {v}h
+          {fmtH(v)}
         </div>
       </div>
       <input type="range" min="0" max={max} step="0.5" value={v} onChange={(e) => setV(+e.target.value)} />
@@ -282,7 +258,7 @@ function HoursSlider({ s, onCommit }) {
             Cancel
           </Tap>
           <Tap onClick={() => onCommit(s.id, v)} style={{ flex: 2, background: C.amber, color: C.onAccent, padding: "11px 0", borderRadius: 12, fontSize: 14, fontWeight: 650 }}>
-            Confirm {v}h
+            Confirm {fmtH(v)}
           </Tap>
         </div>
       )}
@@ -305,7 +281,7 @@ function DaySheet({ day, value, isCustom, onClose, onConfirm, onReset }) {
           {fmtDay(day)} {fmtDate(day)}
         </div>
         <div style={{ fontSize: 46, fontWeight: 700, letterSpacing: -1.8, margin: "8px 0 4px", fontVariantNumeric: "tabular-nums" }}>
-          {v}h
+          {fmtH(v)}
         </div>
         <div style={{ fontSize: 14, color: C.dim, marginBottom: 22 }}>
           How much can you study this day?
@@ -366,6 +342,9 @@ export default function App() {
   const [paused, setPaused] = useState(false);      // holds autosave while the account switches
   const [loginFrom, setLoginFrom] = useState("onboard");
   const [loginFirst, setLoginFirst] = useState(false);  // login is the launch screen, not a detour
+  // a study session; kept on this device so a reload or a closed tab doesn't lose a running timer
+  const [session, setSession] = useState(readSession);
+  useEffect(() => { writeSession(session); }, [session]);
 
   /* put a saved plan into the screen's state */
   const applyState = (s) => {
@@ -374,7 +353,8 @@ export default function App() {
     setOv(s?.ov ?? {});
     setPace(s?.pace ?? "steady");
     setTheme(THEMES.some((t) => t.id === s?.theme) ? s.theme : "system");
-    setSubjects(Array.isArray(s?.subjects) ? s.subjects : []);
+    // hours studied used to be one total; they're dated entries now
+    setSubjects(Array.isArray(s?.subjects) ? s.subjects.map((x) => migrateLog(x, key(new Date()))) : []);
     setOnboarded(!!s?.onboarded);
   };
 
@@ -385,7 +365,7 @@ export default function App() {
       if (!alive) return;
       setSync(source === "cloud" ? "cloud" : "local");
       if (s) applyState(s);
-      const home = s?.onboarded ? "subjects" : "onboard";
+      const home = s?.onboarded ? "today" : "onboard";
 
       // Login comes first, unless this device is already signed in to an
       // account, or the person already chose to continue without one.
@@ -402,8 +382,8 @@ export default function App() {
         setLoginFrom(home);
         setLoginFirst(true);
         setScreen("login");
-      } else if (home === "subjects") {
-        setScreen("subjects");
+      } else if (home === "today") {
+        setScreen("today");
       }
       setReady(true);
     });
@@ -437,9 +417,10 @@ export default function App() {
     const handleBack = (e) => {
       if (sheet) { e?.preventDefault?.(); setSheet(null); return true; }
       if (screen === "login") { e?.preventDefault?.(); leaveLogin(); return true; }
-      if (screen === "detail") { e?.preventDefault?.(); go("subjects", "back"); return true; }
-      if (screen !== "subjects" && screen !== "onboard") {
-        e?.preventDefault?.(); go("subjects", "back"); return true;
+      if (screen === "timer") { e?.preventDefault?.(); closeTimer(); return true; }
+      if (screen === "detail" || screen === "import") { e?.preventDefault?.(); go("subjects", "back"); return true; }
+      if (screen !== "today" && screen !== "onboard") {
+        e?.preventDefault?.(); go("today", "back"); return true;
       }
       return false;
     };
@@ -449,7 +430,7 @@ export default function App() {
       document.removeEventListener("backbutton", handleBack);
       window.removeEventListener("popstate", handleBack);
     };
-  }, [sheet, screen, loginFrom, loginFirst]);
+  }, [sheet, screen, loginFrom, loginFirst, session]);
   const flash = (m) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 
   /* ---- accounts ----
@@ -503,9 +484,9 @@ export default function App() {
     setPaused(false);
     flash("Signed in");
     setLoginFirst(false);
-    // land on Subjects if the plan they now have has any set-up in it
+    // land on Today if the plan they now have has any set-up in it
     const plan = remote ?? { onboarded, subjects };
-    go(plan.onboarded || plan.subjects?.length ? "subjects" : "onboard");
+    go(plan.onboarded || plan.subjects?.length ? "today" : "onboard");
   };
 
   const signOutNow = async () => {
@@ -529,6 +510,9 @@ export default function App() {
   const analysis = plan.subjects;
   const passed = plan.passed;
 
+  const day = useMemo(() => todayPlan(subjects, { wd, we, ov, pace }), [subjects, wd, we, ov, pace]);
+  const emptyActions = { onAdd: () => setSheet({ mode: "add" }), onImport: () => go("import") };
+
   const worst = analysis.reduce((a, b) => (b.gap < (a?.gap ?? Infinity) ? b : a), null);
   const totalShort = analysis.reduce((t, s) => t + Math.min(0, s.gap), 0);
   const totalSpare = plan.spare;
@@ -544,6 +528,28 @@ export default function App() {
       // built to the chapter count, so a short saved list never swallows a tick
       p.map((s) => (s.id === id ? { ...s, done: Array.from({ length: s.chapters }, (_, j) => (j === i ? !s.done?.[j] : !!s.done?.[j])) } : s))
     );
+
+  /* ---- study timer ----
+     A session with time on the clock, or one waiting for "Add 25 minutes?",
+     survives leaving the screen; anything else is cleared on the way out. */
+  const openTimer = (id, from) => {
+    if (!sessionActive(session)) setSession(newSession(id, from));
+    go("timer");
+  };
+  function closeTimer() {
+    if (!sessionActive(session)) setSession(null);
+    go(session?.from ?? "today", "back");
+  }
+  /* a finished session, once the student has said yes: a dated entry, and the chapter if they ticked it */
+  const logSession = (id, minutes, chapter) => {
+    const today = key(new Date());
+    setSubjects((p) => p.map((x) => {
+      if (x.id !== id) return x;
+      const y = addLog(x, minutes / 60, today, "timer");
+      if (chapter == null) return y;
+      return { ...y, done: Array.from({ length: y.chapters }, (_, j) => (j === chapter ? true : !!y.done?.[j])) };
+    }));
+  };
 
   const passedActions = {
     onUpdate: (s) => setSheet({ mode: "edit", subject: s }),
@@ -568,6 +574,8 @@ export default function App() {
     @keyframes barUp { from { opacity:0; transform: translateY(70px) } to { opacity:1; transform:none } }
     @keyframes barUpCentered { from { opacity:0; transform: translate(-50%, 70px) } to { opacity:1; transform: translate(-50%, 0) } }
     .rise { animation: rise .5s cubic-bezier(.32,.72,0,1) both }
+    @keyframes skel { from { background-position: 100% 50% } to { background-position: 0 50% } }
+    .skel { background: linear-gradient(90deg, var(--raised) 30%, var(--hover) 50%, var(--raised) 70%); background-size: 300% 100%; animation: skel 1.4s ease-in-out infinite }
     @keyframes pdfspin { to { transform: rotate(360deg) } }
     .pdf-spin { display: inline-block; animation: pdfspin .8s linear infinite }
     .focus-ring:focus-visible { outline: 2px solid ${C.accent}; outline-offset: 3px }
@@ -588,7 +596,9 @@ export default function App() {
     }
   `;
 
-  const tabbed = ["subjects", "reality", "plan", "time"].includes(screen);
+  useEffect(() => { if (screen === "timer" && !session) go("today", "back"); }, [screen, session]);
+
+  const tabbed = ["today", "subjects", "reality", "plan", "time"].includes(screen);
   /* Desktop: a sidebar stays on every screen after onboarding and login,
      and replaces the floating tab bar. Phones keep the tab bar. */
   const withNav = desktop && ready && screen !== "onboard" && screen !== "login";
@@ -605,11 +615,11 @@ export default function App() {
     >
       <style>{styles}</style>
 
-      {withNav && <Sidebar screen={screen} go={go} onAdd={() => setSheet({ mode: "add" })} />}
+      {withNav && <Sidebar screen={screen} go={go} onAdd={() => setSheet({ mode: "add" })} onImport={() => go("import")} />}
 
       <div style={desktop ? { marginLeft: withNav ? SIDEBAR_W : 0, overflowX: "hidden" } : undefined}>
       <div style={desktop ? { maxWidth: withNav ? CONTENT_MAX : MOBILE_MAX, margin: "0 auto", padding: withNav ? "0 16px" : 0 } : undefined}>
-      {!ready && <div className="appmin" />}
+      {!ready && <div className="appmin"><Skeleton /></div>}
       {ready && (
       <div
         key={screen + openId}
@@ -621,7 +631,7 @@ export default function App() {
       >
         {screen === "onboard" && (
           <Onboard wd={wd} we={we} setWd={setWd} setWe={setWe}
-            onDone={() => { setOnboarded(true); go("subjects"); flash("Saved"); }}
+            onDone={() => { setOnboarded(true); go("today"); flash("Saved"); }}
             onSignIn={cloudApi ? () => openLogin("onboard") : null} />
         )}
         {screen === "login" && (
@@ -633,19 +643,43 @@ export default function App() {
             onClose={leaveLogin}
           />
         )}
+        {screen === "today" && (
+          <Today
+            day={day} data={analysis} passed={passed}
+            session={sessionActive(session) ? session : null}
+            onStart={(id) => openTimer(id, "today")}
+            onResume={() => go("timer")}
+            onOpen={(id) => { setOpenId(id); go("detail"); }}
+            onTime={() => go("time")}
+            {...emptyActions}
+          />
+        )}
         {screen === "subjects" && (
           <Subjects sync={sync} data={analysis} passed={passed} passedActions={passedActions} onOpen={(id) => { setOpenId(id); go("detail"); }}
             onAdd={() => setSheet({ mode: "add" })}
+            onImport={() => go("import")}
             onSample={() => { setSubjects(sampleSubjects()); flash("Sample subjects loaded"); }} />
         )}
+        {screen === "import" && (
+          <ImportPdf
+            defaultPace={pace}
+            onCancel={() => go("subjects", "back")}
+            onManual={() => { go("subjects", "back"); setSheet({ mode: "add" }); }}
+            onSave={(list) => {
+              setSubjects((p) => [...p, ...list]);
+              flash(`${list.length} subject${list.length === 1 ? "" : "s"} added`);
+              go("subjects", "back");
+            }}
+          />
+        )}
         {screen === "reality" && (
-          <Reality data={analysis} passed={passed} passedActions={passedActions} worst={worst} totalShort={totalShort} totalSpare={totalSpare}
+          <Reality data={analysis} passed={passed} passedActions={passedActions} worst={worst} totalShort={totalShort} totalSpare={totalSpare} {...emptyActions}
             onSetLog={(id, v) => {
-              patch(id, { logged: Math.max(0, v) });
+              setSubjects((p) => p.map((x) => (x.id === id ? setLoggedTotal(x, v, key(new Date())) : x)));
               flash("Changes confirmed");
             }} />
         )}
-        {screen === "plan" && <Plan data={analysis} />}
+        {screen === "plan" && <Plan data={analysis} {...emptyActions} />}
         {screen === "time" && (
           <TimeScreen
             wd={wd} we={we} ov={ov} pace={pace} lastExam={lastExam}
@@ -666,6 +700,15 @@ export default function App() {
             setOverlay={setOverlay}
           />
         )}
+        {screen === "timer" && session && (
+          <Timer
+            s={analysis.find((x) => x.id === session.subjectId)}
+            session={session}
+            setSession={setSession}
+            onLog={(minutes, chapter) => logSession(session.subjectId, minutes, chapter)}
+            onClose={closeTimer}
+          />
+        )}
         {screen === "detail" && (
           <Detail
             s={analysis.find((x) => x.id === openId)}
@@ -674,6 +717,8 @@ export default function App() {
             onRemove={removeSubject}
             onPatch={patch}
             onEdit={(subj) => setSheet({ mode: "edit", subject: subj })}
+            onStudy={(id) => openTimer(id, "detail")}
+            studying={sessionActive(session)}
             flash={flash}
             setOverlay={setOverlay}
           />
@@ -905,7 +950,7 @@ function TimeScreen({ wd, we, ov, pace, theme, onTheme, lastExam, account, onSig
     <>
       <div className="rise card" style={{ ...hero("accent"), marginBottom: SP.group }}>
         <div style={{ fontSize: 64, fontWeight: 700, letterSpacing: -3, color: C.accent, lineHeight: 1 }}>
-          {Math.round(totalHours)}h
+          {fmtH(totalHours)}
         </div>
         <div style={{ fontSize: 14, color: C.dim, marginTop: 14, lineHeight: 1.5 }}>
           total study time between now and your last exam. Every change below moves this
@@ -962,7 +1007,7 @@ function TimeScreen({ wd, we, ov, pace, theme, onTheme, lastExam, account, onSig
                 {new Date(d).getDate()}
               </div>
               <div style={{ fontSize: 16, fontWeight: 700, marginTop: 5, color: C.text, fontVariantNumeric: "tabular-nums" }}>
-                {val}h
+                {fmtH(val)}
               </div>
             </Tap>
           );
@@ -1169,7 +1214,7 @@ function SyncChip({ sync }) {
   );
 }
 
-function Subjects({ data, passed, passedActions, onOpen, onAdd, onSample, sync }) {
+function Subjects({ data, passed, passedActions, onOpen, onAdd, onImport, onSample, sync }) {
   const desktop = useIsDesktop();
   return (
     <div style={{ padding: "60px 24px 0" }}>
@@ -1187,6 +1232,12 @@ function Subjects({ data, passed, passedActions, onOpen, onAdd, onSample, sync }
             style={{ width: "100%", marginTop: 20, background: C.accent, color: C.onAccent, padding: "16px 0", borderRadius: 14, fontSize: 16, fontWeight: 650 }}
           >
             Add your first subject
+          </Tap>
+          <Tap
+            onClick={onImport}
+            style={{ width: "100%", marginTop: 10, background: C.surface, border: `1px solid ${C.line}`, color: C.text, padding: "14px 0", borderRadius: 14, fontSize: 14.5, fontWeight: 600 }}
+          >
+            Import from your portions PDF
           </Tap>
           <Tap
             onClick={onSample}
@@ -1218,14 +1269,14 @@ function Subjects({ data, passed, passedActions, onOpen, onAdd, onSample, sync }
                   {!s.sameName && <div style={{ fontSize: 13, color: C.dim }}>{fmtDate(s.date)}</div>}
                 </div>
                 <div style={{ marginTop: 8, fontSize: 14, color: s.gap < -0.5 ? C.shortfall : C.fits, fontWeight: 600 }}>
-                  {s.gap < -0.5 ? `${Math.round(-s.gap)}h short` : `${Math.round(s.gap)}h spare`}
+                  {s.gap < -0.5 ? `${fmtH(-s.gap)} short` : `${fmtH(Math.max(0, s.gap))} spare`}
                   <span style={{ color: C.dim, fontWeight: 400 }}>
                     {"  ·  "}{s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · {s.doneCount}/{s.chapters} chapters
                   </span>
                 </div>
                 {s.perDay != null && s.needed > 0 && (
                   <div style={{ marginTop: 6, fontSize: 13, color: C.dim }}>
-                    Needs <span style={{ color: s.perDay > s.havePerDay ? C.shortfall : C.text, fontWeight: 600 }}>{s.perDay.toFixed(1)}h a day</span>
+                    Needs <span style={{ color: s.perDay > s.havePerDay ? C.shortfall : C.text, fontWeight: 600 }}>{fmtH(s.perDay)} a day</span>
                     {s.syl && <> · ~{fmtMarks(s.marksLeft)} marks left</>}
                   </div>
                 )}
@@ -1237,9 +1288,14 @@ function Subjects({ data, passed, passedActions, onOpen, onAdd, onSample, sync }
       <PassedList passed={passed} {...passedActions} />
       {(data.length > 0 || passed.length > 0) && (
         <>
-          <Tap onClick={onAdd} style={{ width: "100%", marginTop: SP.group, background: "transparent", border: `1px dashed ${C.lineHi}`, color: C.dim, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 500 }}>
-            Add a subject
-          </Tap>
+          <div style={{ display: "flex", gap: 10, marginTop: SP.group }}>
+            <Tap onClick={onAdd} style={{ flex: 1, background: "transparent", border: `1px dashed ${C.lineHi}`, color: C.dim, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 500 }}>
+              Add a subject
+            </Tap>
+            <Tap onClick={onImport} style={{ flex: 1, background: "transparent", border: `1px dashed ${C.lineHi}`, color: C.dim, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 500 }}>
+              Import from PDF
+            </Tap>
+          </div>
           <div style={{ fontSize: 13, color: C.dim, textAlign: "center", marginTop: 12 }}>
             {desktop ? "Click" : "Tap"} a subject to set chapter difficulty, rename chapters, or remove it.
           </div>
@@ -1249,8 +1305,143 @@ function Subjects({ data, passed, passedActions, onOpen, onAdd, onSample, sync }
   );
 }
 
+/* ------------------------- EMPTY AND LOADING ------------------------- */
+function EmptyState({ title, text, onAdd, onImport }) {
+  return (
+    <div className="rise card" style={{ ...hero("accent"), marginBottom: SP.section }}>
+      <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5 }}>{title}</div>
+      <div style={{ color: C.dim, fontSize: 14.5, lineHeight: 1.6, marginTop: 10 }}>{text}</div>
+      {onAdd && (
+        <Tap onClick={onAdd} style={{ width: "100%", marginTop: 20, background: C.accent, color: C.onAccent, padding: "15px 0", borderRadius: 14, fontSize: 15.5, fontWeight: 650 }}>
+          Add a subject
+        </Tap>
+      )}
+      {onImport && (
+        <Tap onClick={onImport} style={{ width: "100%", marginTop: 10, background: C.surface, border: `1px solid ${C.line}`, color: C.text, padding: "13px 0", borderRadius: 14, fontSize: 14.5, fontWeight: 600 }}>
+          Import from your portions PDF
+        </Tap>
+      )}
+    </div>
+  );
+}
+
+/* the shape of a screen, while the saved plan loads */
+function Skeleton() {
+  return (
+    <div role="status" aria-busy="true" aria-label="Loading your plan" style={{ padding: "60px 24px 0" }}>
+      <div className="skel" style={{ width: 150, height: 34, borderRadius: 10 }} />
+      <div className="skel" style={{ width: 210, height: 15, borderRadius: 8, marginTop: 12 }} />
+      <div className="skel" style={{ height: 168, borderRadius: 22, marginTop: SP.section }} />
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="skel" style={{ height: 84, borderRadius: 18, marginTop: SP.group, opacity: 1 - i * 0.22 }} />
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------ TODAY ------------------------------ */
+const longDate = (d) => d.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" });
+
+function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, onAdd, onImport }) {
+  const next = day.rows.find((r) => r.left > 1e-6);
+  const listed = day.rows.filter((r) => r.planned > 1e-6 || r.done > 1e-6);
+  const resting = day.rows.filter((r) => r.planned <= 1e-6 && r.done <= 1e-6);
+  const count = day.rows.filter((r) => r.left > 1e-6).length;
+  const n = useCountUp(day.left);
+
+  const big = { fontSize: 72, fontWeight: 700, letterSpacing: -3.5, lineHeight: 1, fontVariantNumeric: "tabular-nums" };
+  const line = { fontSize: 16.5, fontWeight: 500, marginTop: 12, lineHeight: 1.45 };
+  const sub = { fontSize: 13.5, color: C.dim, marginTop: 8, lineHeight: 1.5 };
+  const startBtn = { width: "100%", marginTop: 22, background: C.accent, color: C.onAccent, padding: "16px 12px", borderRadius: 14, fontSize: 16, fontWeight: 650 };
+
+  return (
+    <div style={{ padding: "60px 24px 0" }}>
+      <Header title="Today" sub={longDate(new Date())} />
+
+      {data.length === 0 ? (
+        <EmptyState
+          title={passed.length ? "No exams ahead" : "Nothing planned yet"}
+          text="Add your exams and this shows how many hours to study today, and which subject to start with."
+          onAdd={onAdd} onImport={onImport}
+        />
+      ) : (
+        <>
+          <div className="rise card" style={{ ...hero("accent"), marginBottom: SP.section }}>
+            <div style={{ ...big, color: day.left > 1e-6 ? C.accent : C.fits }} aria-label={`${fmtH(day.left)} to study today`}>{fmtH(n)}</div>
+            {day.capacity <= 0 ? (
+              <>
+                <div style={line}>No study time set for today.</div>
+                <div style={sub}>
+                  Today has 0 hours on the{" "}
+                  <Tap className="focus-ring" onClick={onTime} style={{ background: "none", padding: 0, color: C.accentText, fontWeight: 600, fontSize: "inherit" }}>Time</Tap>
+                  {" "}tab. Change it there if you're studying today.
+                </div>
+              </>
+            ) : day.planned <= 1e-6 ? (
+              <>
+                <div style={line}>Nothing needed today.</div>
+                <div style={sub}>Every subject is covered by the hours you've already put in.</div>
+              </>
+            ) : day.left <= 1e-6 ? (
+              <>
+                <div style={line}>Today's hours are done.</div>
+                <div style={sub}>{fmtH(day.done)} logged today, against {fmtH(day.planned)} planned.</div>
+              </>
+            ) : (
+              <>
+                <div style={line}>to study today{count > 1 ? `, across ${count} subjects` : ""}.</div>
+                {day.done > 1e-6 && <div style={sub}>{fmtH(day.done)} logged so far, of {fmtH(day.planned)} planned.</div>}
+              </>
+            )}
+            {session ? (
+              <Tap className="focus-ring" onClick={onResume} style={startBtn}>Back to the timer</Tap>
+            ) : next ? (
+              <Tap className="focus-ring" onClick={() => onStart(next.id)} style={startBtn}>Start with {next.name}</Tap>
+            ) : null}
+          </div>
+
+          {listed.length > 0 && <SectionLabel>In order of priority</SectionLabel>}
+          <CardGrid>
+            {listed.map((r, i) => (
+              <Tap
+                key={r.id}
+                className="card focus-ring"
+                onClick={() => onOpen(r.id)}
+                style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 14, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 18, padding: "16px 18px", color: C.text, animation: `rise .5s ${EASE} ${0.05 * i}s both` }}
+              >
+                <span style={{ width: 18, flexShrink: 0, color: C.dim, fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{i + 1}</span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <SubjectName s={r} />
+                  <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 3 }}>
+                    exam {fmtDate(r.date)}{r.done > 1e-6 && ` · ${fmtH(r.done)} logged today`}
+                  </span>
+                </span>
+                <span style={{ flexShrink: 0, textAlign: "right" }}>
+                  {r.left > 1e-6 ? (
+                    <span style={{ fontSize: 18, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmtH(r.left)}</span>
+                  ) : (
+                    <span style={{ fontSize: 13, fontWeight: 650, color: C.fits }}>Done for today</span>
+                  )}
+                </span>
+              </Tap>
+            ))}
+          </CardGrid>
+          {resting.length > 0 && (
+            <div style={{ fontSize: 13, color: C.dim, marginTop: 12, lineHeight: 1.5 }}>
+              Nothing needed today for {resting.map((r) => r.name).join(", ")}.
+            </div>
+          )}
+          <div style={{ fontSize: 12.5, color: C.dim, marginTop: 16, lineHeight: 1.5 }}>
+            From the day-by-day plan: today's {fmtH(day.capacity)} are shared between your subjects by how much each needs per day before its exam.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* ---------------------------- REALITY ---------------------------- */
-function Reality({ data, passed, passedActions, worst, totalShort, totalSpare, onSetLog }) {
+function Reality({ data, passed, passedActions, worst, totalShort, totalSpare, onSetLog, onAdd, onImport }) {
   const short = Math.round(-totalShort);
   const spare = Math.round(totalSpare);
   const n = useCountUp(short > 0 ? short : spare);
@@ -1262,9 +1453,17 @@ function Reality({ data, passed, passedActions, worst, totalShort, totalSpare, o
     <div style={{ padding: "60px 24px 0" }}>
       <Header title="Reality check" sub="Where the numbers actually land" />
 
-      <div className="rise card" style={{ ...hero(short > 0 ? "shortfall" : "fits"), marginBottom: SP.section }}>
+      {data.length === 0 && (
+        <EmptyState
+          title={passed.length ? "No exams ahead" : "Nothing to check yet"}
+          text="Add your exams and this shows whether the hours you have cover the work each one needs."
+          onAdd={onAdd} onImport={onImport}
+        />
+      )}
+
+      {data.length > 0 && <div className="rise card" style={{ ...hero(short > 0 ? "shortfall" : "fits"), marginBottom: SP.section }}>
         <div style={{ fontSize: 64, fontWeight: 700, letterSpacing: -3, lineHeight: 1, color: short > 0 ? C.shortfall : C.fits }}>
-          {Math.round(n)}h
+          {fmtH(n)}
         </div>
         <div style={{ fontSize: 17, marginTop: 14, lineHeight: 1.5, fontWeight: 500 }}>
           {short > 0 ? (<>short overall. The tightest is <span style={{ color: C.shortfall }}>{worst?.name}</span>.</>) : (<>spare in total.</>)}
@@ -1278,7 +1477,7 @@ function Reality({ data, passed, passedActions, worst, totalShort, totalSpare, o
           Every day's hours are shared between the subjects whose exams are still ahead,
           weighted by how urgent each one is. No hour is counted twice.
         </div>
-      </div>
+      </div>}
 
       {data.length > 0 && <SectionLabel>By subject</SectionLabel>}
       <CardGrid align="start">
@@ -1295,7 +1494,7 @@ function Reality({ data, passed, passedActions, worst, totalShort, totalSpare, o
                   </div>
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 600, color: fits ? C.fits : C.shortfall }}>
-                  {fits ? "+" : "−"}{Math.abs(Math.round(s.gap))}h
+                  {fits ? "+" : "−"}{fmtH(Math.abs(s.gap))}
                 </div>
               </div>
               <Bar label="You have" hours={s.available} pct={go ? (s.available / max) * 100 : 0} color={C.lineHi} delay={0.1 * i} />
@@ -1323,7 +1522,7 @@ function Bar({ label, hours, pct, color, delay }) {
     <div style={{ marginBottom: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: C.dim, marginBottom: 7 }}>
         <span>{label}</span>
-        <span style={{ fontVariantNumeric: "tabular-nums", color: C.text }}>{Math.round(hours)}h</span>
+        <span style={{ fontVariantNumeric: "tabular-nums", color: C.text }}>{fmtH(hours)}</span>
       </div>
       <div style={{ height: 8, background: C.raised, borderRadius: 99, overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: `width 1s cubic-bezier(.32,.72,0,1) ${delay}s` }} />
@@ -1333,15 +1532,6 @@ function Bar({ label, hours, pct, color, delay }) {
 }
 
 /* ------------------------------ PLAN ------------------------------ */
-/* Which subject first: urgency = hours still needed / study days left
-   before that exam, i.e. what it needs from each of its days. The more it
-   needs a day, the sooner it slips if you fall behind. An exam with no
-   study days left and work still to do is the most urgent of all. */
-function urgencyOf(s) {
-  if (s.perDay != null) return s.perDay;
-  return s.needed > 0 ? Infinity : 0;
-}
-
 function urgencyTag(s) {
   const u = urgencyOf(s);
   if (s.havePerDay == null) return s.needed > 0 ? { label: "At risk", color: C.red } : { label: "Comfortable", color: C.green };
@@ -1350,10 +1540,22 @@ function urgencyTag(s) {
   return { label: "Comfortable", color: C.green };
 }
 
+/* Which subject first (rankByUrgency, plan.js), with whether you're on pace as its first line */
 function SubjectOrder({ data }) {
-  const ranked = [...data].sort((a, b) => urgencyOf(b) - urgencyOf(a) || toDate(a.date) - toDate(b.date));
+  const ranked = rankByUrgency(data);
+  const behind = data.filter((s) => s.behind > 0);
   return (
     <div className="rise card" style={{ ...card, marginBottom: SP.group }}>
+      <div role="status" style={{ fontSize: 13.5, lineHeight: 1.5, paddingBottom: 12, marginBottom: 12, borderBottom: `1px solid ${C.line}` }}>
+        {behind.length ? (
+          <>
+            <b style={{ color: C.accentText, fontWeight: 650 }}>Behind pace:</b>{" "}
+            {behind.map((s) => `${s.name} by ${s.behind} chapter${s.behind === 1 ? "" : "s"}`).join(", ")}.
+          </>
+        ) : (
+          <><b style={{ color: C.fits, fontWeight: 650 }}>On pace.</b> Every subject is where it should be for today.</>
+        )}
+      </div>
       <div style={{ fontSize: 15, fontWeight: 600 }}>Do these in this order</div>
       <ol style={{ listStyle: "none", margin: "10px 0 0", padding: 0 }}>
         {ranked.map((s, k) => {
@@ -1364,7 +1566,7 @@ function SubjectOrder({ data }) {
               <span style={{ flex: 1, minWidth: 0 }}>
                 <SubjectName s={s} />
                 <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
-                  {s.perDay != null ? `${s.perDay.toFixed(1)}h a day` : "no study days left"} · exam {fmtDate(s.date)}
+                  {s.perDay != null ? `${fmtH(s.perDay)} a day` : "no study days left"} · exam {fmtDate(s.date)}
                 </span>
               </span>
               <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 650, color: tag.color, background: C.raised, border: `1px solid ${C.line}`, borderRadius: 99, padding: "4px 10px" }}>
@@ -1376,49 +1578,15 @@ function SubjectOrder({ data }) {
       </ol>
       <div style={{ fontSize: 12.5, color: C.dim, marginTop: 10, paddingTop: 12, borderTop: `1px solid ${C.line}`, lineHeight: 1.5 }}>
         Ordered by how much each subject needs per day against the days it has left. The ones at the top will slip first if you fall behind.
+        Pace compares the chapters you've ticked with an even spread from the day you added each subject to its exam.
       </div>
     </div>
   );
 }
 
-function Plan({ data }) {
+function Plan({ data, onAdd, onImport }) {
   const [open, setOpen] = useState(data[0]?.id ?? null);
-  const behindList = data.filter((s) => s.behind > 0);
   const split = useSplit();
-
-  const paceCard = (
-    <div
-      className="rise"
-      style={{
-        ...(behindList.length ? notice : tinted("fits")),
-        marginBottom: SP.group, fontSize: 15, lineHeight: 1.55,
-      }}
-    >
-      {behindList.length ? (
-        <>
-          <b style={{ color: C.accentText }}>Behind pace.</b>{" "}
-          {behindList.map((s, i) => (
-            <span key={s.id}>
-              {i > 0 && ", "}
-              {s.name} by {s.behind} chapter{s.behind === 1 ? "" : "s"}
-            </span>
-          ))}
-          .
-          <div style={{ color: C.dim, fontSize: 13, marginTop: 8 }}>
-            Pace = chapters you'd have finished by today if you'd spread them evenly from
-            when you added the subject to exam day. Tick chapters and this updates itself.
-          </div>
-        </>
-      ) : (
-        <>
-          <b style={{ color: C.fits }}>On pace.</b> Every subject is where it should be for today.
-          <div style={{ color: C.dim, fontSize: 13, marginTop: 8 }}>
-            Measured against an even spread of chapters from the day you added each subject to exam day.
-          </div>
-        </>
-      )}
-    </div>
-  );
 
   const phases = (
     <>
@@ -1436,7 +1604,7 @@ function Plan({ data }) {
                   <SubjectName s={s} />
                   <div style={{ fontSize: 13, color: s.behind > 0 ? C.accentText : C.dim, marginTop: 4 }}>
                     {s.behind > 0 ? `${s.behind} chapter${s.behind === 1 ? "" : "s"} behind pace` : "On pace"}
-                    <span style={{ color: C.dim }}> · {fmtDate(s.windowStart)}–{fmtDate(s.date)} · {Math.round(s.available)}h</span>
+                    <span style={{ color: C.dim }}> · {fmtDate(s.windowStart)}–{fmtDate(s.date)} · {fmtH(s.available)}</span>
                   </div>
                 </div>
                 <div style={{ color: C.dim, fontSize: 18, transform: isOpen ? "rotate(90deg)" : "none", transition: "transform .3s cubic-bezier(.32,.72,0,1)" }}>›</div>
@@ -1458,7 +1626,7 @@ function Plan({ data }) {
                     ) : (
                       <div style={{ fontSize: 13, color: C.dim, fontVariantNumeric: "tabular-nums", textAlign: "right" }}>
                         {fmtDate(g.from)}{g.days > 1 ? ` – ${fmtDate(g.to)}` : ""}
-                        <div style={{ fontSize: 11.5 }}>{Math.round(g.hours)}h · {g.days}d</div>
+                        <div style={{ fontSize: 11.5 }}>{fmtH(g.hours)} · {g.days}d</div>
                       </div>
                     )}
                   </div>
@@ -1476,7 +1644,7 @@ function Plan({ data }) {
                       <div key={c.i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 0" }}>
                         <div style={{ width: 6, height: 6, borderRadius: 99, background: C.accent }} />
                         <div style={{ flex: 1, fontSize: 14 }}>{c.name}</div>
-                        <div style={{ fontSize: 12.5, color: C.dim, fontVariantNumeric: "tabular-nums" }}>{c.cost.toFixed(1)}h</div>
+                        <div style={{ fontSize: 12.5, color: C.dim, fontVariantNumeric: "tabular-nums" }}>{fmtH(c.cost)}</div>
                       </div>
                     ))}
                   </div>
@@ -1492,15 +1660,17 @@ function Plan({ data }) {
   return (
     <div style={{ padding: "60px 24px 0" }}>
       <Header title="Plan" sub="Phases sized to how each subject behaves" />
-      {split ? (
-        <Split
-          main={phases}
-          side={<>{data.length > 0 && <SubjectOrder data={data} />}{paceCard}</>}
+      {data.length === 0 ? (
+        <EmptyState
+          title="Nothing to plan yet"
+          text="Add your exams and this lays out what to do first, and when to learn, practise and revise each subject."
+          onAdd={onAdd} onImport={onImport}
         />
+      ) : split ? (
+        <Split main={phases} side={<SubjectOrder data={data} />} />
       ) : (
         <>
-          {data.length > 0 && <SubjectOrder data={data} />}
-          {paceCard}
+          <SubjectOrder data={data} />
           <div style={{ height: SP.section - SP.group }} />
           {phases}
         </>
@@ -1510,23 +1680,30 @@ function Plan({ data }) {
 }
 
 /* ----------------------------- DETAIL ----------------------------- */
-function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOverlay }) {
+function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, studying, flash, setOverlay }) {
   const [editing, setEditing] = useState(false);
-  const [draftNames, setDraftNames] = useState([]);
-  const [draftDiff, setDraftDiff] = useState([]);
-  const [draftCount, setDraftCount] = useState(0);
-  const [draftWeight, setDraftWeight] = useState([]);
+  // the editor's chapters; each row remembers its saved chapter (chapters.js)
+  const [rows, setRows] = useState([]);
   const [confirm, setConfirm] = useState(false);
   const [orderFor, setOrderFor] = useState(null);   // chapter index whose exercise order is open
   const split = useSplit();
 
   useEffect(() => {
-    if (s) { setDraftNames(s.names ?? []); setDraftDiff(s.diffs ?? []); setDraftWeight(s.weight ?? []); setDraftCount(s.chapters); }
+    if (s) setRows(rowsFromSubject(s));
   }, [s?.id, s?.chapters]);
 
   useEffect(() => { setOverlay(editing || orderFor != null); return () => setOverlay(false); }, [editing, orderFor]);
 
-  if (!s) return null;
+  if (!s) {
+    return (
+      <div style={{ padding: "60px 24px 0" }}>
+        <Tap onClick={onBack} style={{ background: "transparent", color: C.accentText, padding: 0, fontSize: 16, marginBottom: 22, fontWeight: 500 }}>
+          ‹ Subjects
+        </Tap>
+        <EmptyState title="This subject isn't here any more" text="It may have been removed, or its exam has passed. Your other subjects are on the Subjects tab." />
+      </div>
+    );
+  }
   const pct = s.chapters ? (s.doneCount / s.chapters) * 100 : 0;
 
   /* Fastest way to the target score. Chapters left off this subject when it
@@ -1567,26 +1744,14 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
   const planPerDay = plan ? dailyNeed(plan.hours - (s.logged ?? 0), s.studyDays) : null;
   const orderCh = orderFor != null ? s.syl?.byId[s.refs?.[orderFor]] : null;
 
-  const resize = (n) => {
-    n = Math.max(1, Math.min(60, n));
-    setDraftCount(n);
-    setDraftNames((p) => Array.from({ length: n }, (_, i) => p[i] ?? ""));
-    setDraftDiff((p) => Array.from({ length: n }, (_, i) => p[i] ?? 2));
-    setDraftWeight((p) => Array.from({ length: n }, (_, i) => p[i] ?? DEFAULT_WEIGHT));
-  };
+  const resize = (n) => setRows((r) => resizeRows(r, n));
+  const editRow = (k, changes) => setRows((r) => r.map((x) => (x.key === k ? { ...x, ...changes } : x)));
   // syllabus chapters get their marks from sample papers; everything else is weighted by hand
   const weighable = !s.syl;
 
   const commit = () => {
-    onPatch(s.id, {
-      chapters: draftCount,
-      names: draftNames,
-      diff: draftDiff,
-      done: Array.from({ length: draftCount }, (_, i) => s.done[i] ?? false),
-      ...(weighable ? { weight: Array.from({ length: draftCount }, (_, i) => draftWeight[i] ?? DEFAULT_WEIGHT) } : {}),
-      // chapters added here are your own; syllabus links stay on the ones that remain
-      ...(s.refs ? { refs: Array.from({ length: draftCount }, (_, i) => s.refs[i] ?? null) } : {}),
-    });
+    // ticks, syllabus links and weightage follow each chapter, wherever rows were removed
+    onPatch(s.id, applyRows(s, rows, { weighable }));
     setEditing(false);
     flash("Changes confirmed");
   };
@@ -1603,8 +1768,8 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
           <div style={{ height: "100%", width: `${pct}%`, background: C.amber, borderRadius: 99, transition: "width .6s cubic-bezier(.32,.72,0,1)" }} />
         </div>
         <div style={{ fontSize: 13, color: C.dim, marginTop: 14, lineHeight: 1.5 }}>
-          At your pace, an average remaining chapter here is worth about {s.perChapter.toFixed(1)}h — hard ones cost more, easy ones less.
-          {s.logged > 0 && ` You've also logged ${s.logged}h here.`}
+          At your pace, an average remaining chapter here is worth about {fmtH(s.perChapter)} — hard ones cost more, easy ones less.
+          {s.logged > 0 && ` You've also logged ${fmtH(s.logged)} here.`}
         </div>
       </div>
 
@@ -1633,19 +1798,19 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
             <div>
               <div style={{ fontSize: 64, fontWeight: 700, letterSpacing: -3, lineHeight: 1, color: s.perDay > s.havePerDay ? C.shortfall : C.accent }}>
-                {s.perDay.toFixed(1)}h
+                {fmtH(s.perDay)}
               </div>
               <div style={{ fontSize: 14, color: C.dim, marginTop: 8, lineHeight: 1.45 }}>
                 a day to finish what's left by {fmtDate(s.date)}
               </div>
             </div>
             <div style={{ textAlign: "right", flexShrink: 0 }}>
-              <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{s.havePerDay.toFixed(1)}h</div>
+              <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmtH(s.havePerDay)}</div>
               <div style={{ fontSize: 12, color: C.dim, marginTop: 4, lineHeight: 1.35 }}>in your study day,<br />all subjects</div>
             </div>
           </div>
           <div style={{ fontSize: 13, color: C.dim, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.line}`, lineHeight: 1.55 }}>
-            {Math.round(s.needed)}h left over {s.studyDays} study day{s.studyDays === 1 ? "" : "s"}.{" "}
+            {fmtH(s.needed)} left over {s.studyDays} study day{s.studyDays === 1 ? "" : "s"}.{" "}
             <span style={{ color: C.text, fontWeight: 600 }}>Hours multiplier ×{s.factor.factor.toFixed(2)}</span>
             {s.factor.overconfident
               ? <> — your {s.lastScore}% score decides it on its own (×{s.factor.fromScore.toFixed(2)}), because it disagrees with a confidence of {s.confidence}/5.</>
@@ -1705,33 +1870,42 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
             {weighable && <div style={{ fontSize: 12, color: C.dim, marginTop: 6, lineHeight: 1.45 }}>{WEIGHT_EXPLAINER}</div>}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-            <Tap onClick={() => resize(draftCount - 1)} style={smallBtn}>−</Tap>
-            <div style={{ fontSize: 18, fontWeight: 700, width: 34, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{draftCount}</div>
-            <Tap onClick={() => resize(draftCount + 1)} style={smallBtn}>+</Tap>
+            <Tap onClick={() => resize(rows.length - 1)} style={smallBtn}>−</Tap>
+            <div style={{ fontSize: 18, fontWeight: 700, width: 34, textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{rows.length}</div>
+            <Tap onClick={() => resize(rows.length + 1)} style={smallBtn}>+</Tap>
           </div>
         </div>
       )}
 
-      {(editing ? draftNames : s.names ?? []).map((nm, i) =>
-        editing ? (
-          <div key={i} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "10px 12px", marginBottom: 8 }}>
+      {editing && rows.map((r, i) => (
+          <div key={r.key} data-row={i} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "10px 12px", marginBottom: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <div style={{ width: 22, textAlign: "center", color: C.dim, fontSize: 13, fontVariantNumeric: "tabular-nums" }}>{i + 1}</div>
               <input
-                value={nm}
+                value={r.name}
                 placeholder={`Chapter ${i + 1}`}
-                onChange={(e) => setDraftNames((p) => p.map((x, j) => (j === i ? e.target.value : x)))}
+                aria-label={`Chapter ${i + 1} name`}
+                onChange={(e) => editRow(r.key, { name: e.target.value })}
                 style={{ ...inputStyle, padding: "10px 12px", fontSize: 15 }}
               />
+              <Tap
+                className="focus-ring"
+                disabled={rows.length === 1}
+                aria-label={`Remove ${r.name || `chapter ${i + 1}`}`}
+                onClick={() => setRows((x) => removeRow(x, r.key))}
+                style={{ width: 30, height: 30, flexShrink: 0, borderRadius: 9, background: "transparent", color: C.dim, fontSize: 18, lineHeight: 1, padding: 0 }}
+              >
+                ×
+              </Tap>
             </div>
             <span style={{ ...tinyLabel, marginTop: 8, paddingLeft: 32 }}>{DIFF_QUESTION}</span>
             <div style={{ display: "flex", gap: 6, paddingLeft: 32 }}>
               {DIFF.map((dd) => {
-                const on = (draftDiff[i] ?? 2) === dd.v;
+                const on = r.diff === dd.v;
                 return (
                   <Tap
                     key={dd.v}
-                    onClick={() => setDraftDiff((p) => p.map((x, j) => (j === i ? dd.v : x)))}
+                    onClick={() => editRow(r.key, { diff: dd.v })}
                     style={{
                       flex: 1, ...choice(on),
                       borderRadius: 9, padding: "7px 0", fontSize: 12, fontWeight: 650,
@@ -1747,14 +1921,16 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
                 <span style={tinyLabel}>{WEIGHT_QUESTION}</span>
                 <div style={{ display: "flex" }}>
                 <WeightPicker
-                  value={draftWeight[i] ?? DEFAULT_WEIGHT}
-                  onChange={(v) => setDraftWeight((p) => Array.from({ length: draftCount }, (_, j) => (j === i ? v : p[j] ?? DEFAULT_WEIGHT)))}
+                  value={r.weight ?? DEFAULT_WEIGHT}
+                  onChange={(v) => editRow(r.key, { weight: v })}
                 />
                 </div>
               </div>
             )}
           </div>
-        ) : (() => {
+      ))}
+
+      {!editing && (s.names ?? []).map((nm, i) => (() => {
           const ch = s.syl?.byId[s.refs?.[i]];
           const wm = !ch ? s.chapterMarks?.[i] : null;
           return (
@@ -1789,11 +1965,11 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
                   {!s.done[i] && (wm != null ? (
                     // difficulty is already a chip under the name
                     <span style={{ fontSize: 12, color: C.dim, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
-                      {(s.costs?.[i] ?? s.baseChapter * diffMult(s.diffs?.[i] ?? 2)).toFixed(1)}h
+                      {fmtH(s.costs?.[i] ?? s.baseChapter * diffMult(s.diffs?.[i] ?? 2))}
                     </span>
                   ) : (
                     <span style={{ fontSize: 12, color: diffMeta(s.diffs?.[i] ?? 2).color, fontWeight: 600 }}>
-                      {diffMeta(s.diffs?.[i] ?? 2).label} · {(s.costs?.[i] ?? s.baseChapter * diffMult(s.diffs?.[i] ?? 2)).toFixed(1)}h
+                      {diffMeta(s.diffs?.[i] ?? 2).label} · {fmtH(s.costs?.[i] ?? s.baseChapter * diffMult(s.diffs?.[i] ?? 2))}
                     </span>
                   ))}
                 </span>
@@ -1814,8 +1990,8 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
               )}
             </div>
           );
-        })()
-      )}
+        })())
+      }
 
       {orderCh && (
         <ExerciseSheet
@@ -1851,6 +2027,13 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
       <div style={{ color: C.dim, fontSize: 15 }}>
         {s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · exam {fmtDate(s.date)} · {s.meta.label}-heavy
       </div>
+      <Tap
+        className="focus-ring"
+        onClick={() => onStudy(s.id)}
+        style={{ marginTop: 18, background: C.accent, color: C.onAccent, padding: "13px 22px", borderRadius: 14, fontSize: 15, fontWeight: 650 }}
+      >
+        {studying ? "Back to the timer" : "Start a study session"}
+      </Tap>
 
       <div style={{ height: 24 }} />
       {split ? (
@@ -1868,7 +2051,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
         <SaveBar
           label="Save chapters"
           onSave={commit}
-          onCancel={() => { setDraftNames(s.names ?? []); setDraftWeight(s.weight ?? []); setDraftCount(s.chapters); setEditing(false); }}
+          onCancel={() => { setRows(rowsFromSubject(s)); setEditing(false); }}
         />
       )}
     </div>
@@ -1910,15 +2093,15 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
         <>
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
             <div style={{ flex: 1, background: C.cardHi, borderRadius: 14, padding: "12px 14px" }}>
-              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: C.accentText, fontVariantNumeric: "tabular-nums" }}>{Math.round(hoursLeft)}h</div>
+              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: C.accentText, fontVariantNumeric: "tabular-nums" }}>{fmtH(hoursLeft)}</div>
               <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>
-                {plan.skipped.length ? `instead of ${Math.round(hoursAll)}h` : "every chapter left"}
-                {logged > 0 && `, after ${Math.round(logged)}h already logged`}
+                {plan.skipped.length ? `instead of ${fmtH(hoursAll)}` : "every chapter left"}
+                {logged > 0 && `, after ${fmtH(logged)} already logged`}
               </div>
             </div>
             <div style={{ flex: 1, background: C.cardHi, borderRadius: 14, padding: "12px 14px" }}>
               <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: perDay != null && perDay > s.havePerDay ? C.red : C.text, fontVariantNumeric: "tabular-nums" }}>
-                {perDay != null ? `${perDay.toFixed(1)}h` : "—"}
+                {perDay != null ? fmtH(perDay) : "—"}
               </div>
               <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>a day until {fmtDate(s.date)}</div>
             </div>
@@ -1934,7 +2117,7 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
                   {plan.extras.includes(id) && <span style={{ display: "block", color: C.info, fontSize: 12, marginTop: 2 }}>Cheap extra marks: added as safety margin</span>}
                 </span>
                 <span style={{ flexShrink: 0, fontSize: 12.5, color: C.dim, fontVariantNumeric: "tabular-nums" }}>
-                  ~{fmtMarks(marksOf(id))} · {hoursOf(id).toFixed(1)}h
+                  ~{fmtMarks(marksOf(id))} · {fmtH(hoursOf(id))}
                 </span>
               </li>
             ))}
@@ -1943,7 +2126,7 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
           {plan.skipped.length > 0 && (
             <div style={{ marginTop: 10, background: C.cardHi, borderRadius: 12, padding: "12px 14px", fontSize: 13.5, lineHeight: 1.5 }}>
               <b style={{ fontWeight: 650 }}>Leave for later:</b>{" "}
-              {plan.skipped.map(nameOf).join(", ")}. That saves {Math.round(saved)}h for about {fmtMarks(skippedMarks)} marks.
+              {plan.skipped.map(nameOf).join(", ")}. That saves {fmtH(saved)} for about {fmtMarks(skippedMarks)} marks.
             </div>
           )}
         </>
@@ -2032,7 +2215,7 @@ function ExerciseSheet({ ch, scale, multiplier, onClose }) {
                       <span style={{ color: C.dim, fontWeight: 500 }}> · {e.topic}</span>
                     </div>
                     <div style={{ fontSize: 12, color: C.dim, marginTop: 4, fontVariantNumeric: "tabular-nums" }}>
-                      {e.q} question{e.q === 1 ? "" : "s"} · ~{(exerciseMinutes(ch, e, scale) / 60).toFixed(1)}h practice
+                      {e.q} question{e.q === 1 ? "" : "s"} · ~{fmtH(exerciseMinutes(ch, e, scale) / 60)} practice
                     </div>
                     <div>
                       {k === 0 && tag("Start here", C.accentText)}
@@ -2100,100 +2283,48 @@ function WeightPicker({ value, onChange }) {
 /* What a subject stores. Everything else on an analysed subject is computed. */
 const SUBJECT_KEYS = [
   "id", "name", "date", "createdAt", "chapters", "type", "confidence", "lastScore",
-  "pace", "logged", "names", "diff", "done", "weight", "syllabus", "refs", "target",
+  "pace", "log", "names", "diff", "done", "weight", "syllabus", "refs", "target",
 ];
 const toStored = (o) => Object.fromEntries(SUBJECT_KEYS.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
 
 const fmtMarks = (m) => (Math.round(m * 2) / 2).toString();
 const PASTE = "paste";          // "Chapters from" option: a pasted portions list
-const UPLOAD = "upload";        // "Chapters from" option: a PDF read by Gemini, then reviewed as a pasted list
 const MAX_CHAPTERS = 60;
-/* Read a PDF in the browser and ask the server (api/parse-portions.js) for the
-   chapters Gemini finds. Resolves to { subject: [chapters] }; rejects with an
-   Error whose message can be shown as it is. */
-async function readPdfPortions(file) {
-  if (!file) throw new Error("No file was chosen.");
-  if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
-    throw new Error("That isn't a PDF. Choose a .pdf file, or use Paste portions instead.");
-  }
-  if (file.size > MAX_PDF_BYTES) {
-    throw new Error("That PDF is over 5 MB. Try a smaller file, or use Paste portions instead.");
-  }
-  const base64 = await new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result).replace(/^data:[^;]+;base64,/, ""));
-    r.onerror = () => reject(new Error("That file couldn't be opened. Try again, or use Paste portions instead."));
-    r.readAsDataURL(file);
-  });
-  const body = JSON.stringify({ pdf: base64 });
-  if (body.length > MAX_REQUEST_BYTES) {
-    throw new Error("That PDF is too big to send (the limit is about 3 MB). Try a smaller file, or use Paste portions instead.");
-  }
-  let res;
-  try {
-    res = await fetch("/api/parse-portions", { method: "POST", headers: { "Content-Type": "application/json" }, body });
-  } catch {
-    throw new Error("Couldn't reach the PDF reader. Check your connection, or use Paste portions instead.");
-  }
-  let data = null;
-  try { data = await res.json(); } catch { /* not JSON: no function here, or the host refused it */ }
-  if (!res.ok || !data || typeof data !== "object" || Array.isArray(data)) {
-    if (data?.error) throw new Error(data.error);
-    if (res.status === 413) throw new Error("That PDF is too big to send (the limit is about 3 MB). Try a smaller file, or use Paste portions instead.");
-    throw new Error("PDF import isn't available here. Use Paste portions instead.");
-  }
-  return data;
-}
+/* How a subject can be added: step one of the add sheet. null is your own chapters. */
+const METHODS = [
+  { id: null, title: "Enter manually", sub: "Type the subject, its exam date and how many chapters it has." },
+  { id: PASTE, title: "Paste portions text", sub: "Paste a chapter list. Numbering and headings are tidied for you." },
+];
 
 const PORTIONS_EXAMPLE = "UNIT I: PHYSICAL CHEMISTRY\n1. Solutions\n2. Electrochemistry\nCh 3 - Chemical Kinetics\n• d and f Block Elements";
 const newSubjectId = (name) => name.toLowerCase().replace(/\s+/g, "") + Date.now();
 
 function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
   const desktop = useIsDesktop();
-  const [f, setF] = useState(
-    initial ?? {
-      name: "", date: key(addDays(new Date(), 14)), chapters: 10,
-      type: "theory", confidence: 3, lastScore: 60, pace: defaultPace ?? "steady",
-    }
-  );
+  const blank = () => ({
+    name: "", date: key(addDays(new Date(), 14)), chapters: 10,
+    type: "theory", confidence: 3, lastScore: 60, pace: defaultPace ?? "steady",
+  });
+  const [f, setF] = useState(initial ?? blank);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const lbl = { fontSize: 13, color: C.dim, marginBottom: 8, display: "block" };
 
-  /* source: your own chapters, a pasted portions list, a PDF, or a syllabus from the engine */
+  /* source: your own chapters, a pasted portions list, or a syllabus from the engine.
+     Adding starts by choosing one (step one); editing goes straight to the form. */
+  const [started, setStarted] = useState(mode === "edit");
   const [srcId, setSrcId] = useState(initial?.syllabus ?? null);
   const pasting = srcId === PASTE;
-  const uploading = srcId === UPLOAD;
-  const syl = srcId && !pasting && !uploading ? getSyllabus(srcId) : null;
+  const syl = srcId && !pasting ? getSyllabus(srcId) : null;
 
-  /* PDF import: Gemini reads the file; the student picks a subject, and its
-     chapters land in the paste list to be checked before anything is saved */
-  const [pdf, setPdf] = useState({ status: "idle" });   // idle | reading | done | error
-  const [fromPdf, setFromPdf] = useState(false);       // the paste list came from a PDF
-  const [dragging, setDragging] = useState(false);
-  const uploadPdf = async (file) => {
-    if (!file) return;
-    setPdf({ status: "reading", fileName: file.name });
-    try {
-      const subjects = await readPdfPortions(file);
-      if (!Object.keys(subjects).length) throw new Error("No subjects or chapters were found in that PDF. Use Paste portions instead.");
-      setPdf({ status: "done", fileName: file.name, subjects });
-    } catch (err) {
-      setPdf({ status: "error", fileName: file.name, error: err.message });
-    }
-  };
-  const pickPdfSubject = (subject, chapters) => {
-    setPasteText(chapters.join("\n"));
-    setPasteWeight({});
-    setFromPdf(true);
-    setSrcId(PASTE);
-    setF((p) => ({ ...p, name: p.name.trim() ? p.name : subject }));
-  };
+  /* each step starts at the top of the sheet */
+  const boxRef = useRef(null);
+  useEffect(() => { boxRef.current?.scrollTo?.(0, 0); }, [started, srcId]);
 
   /* pasted portions: parsed live; × deletes that line from the text itself,
      so the text and the list never disagree */
   const [pasteText, setPasteText] = useState("");
   const [pasteWeight, setPasteWeight] = useState({});   // chapter name (lower case) -> weight
-  const parsedAll = pasting ? parsePortions(pasteText, { keepHeadings: fromPdf }) : [];
+  const parsedAll = pasting ? parsePortions(pasteText) : [];
   const parsed = parsedAll.slice(0, MAX_CHAPTERS);
   const weightOf = (name) => pasteWeight[name.toLowerCase()] ?? DEFAULT_WEIGHT;
   const removeLine = (line) =>
@@ -2203,9 +2334,9 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
     return new Set();
   });
   const chooseSource = (id) => {
+    setStarted(true);
     setSrcId(id);
-    setFromPdf(false);
-    if (!id || id === PASTE || id === UPLOAD) return;
+    if (!id || id === PASTE) return;
     const s = getSyllabus(id);
     setPicked(new Set(s.chapters.map((c) => c.id)));   // start with everything; untick what's done
     setF((p) => ({ ...p, name: p.name.trim() ? p.name : s.subject, type: "problem" }));
@@ -2219,7 +2350,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
   const chosenHours = chosen.reduce((t, c) => t + c.hours.total, 0) * factor.factor * pm;
   const chosenMarks = chosen.reduce((t, c) => t + c.marksEst, 0);
 
-  const valid = f.name.trim().length > 0 && !uploading && (!syl || chosen.length > 0) && (!pasting || parsed.length > 0);
+  const valid = f.name.trim().length > 0 && (!syl || chosen.length > 0) && (!pasting || parsed.length > 0);
 
   const submitSyllabus = () => {
     const prevRefs = initial?.refs ?? [];
@@ -2236,7 +2367,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
     });
     const base = mode === "edit"
       ? { ...initial, ...f }
-      : { ...f, id: newSubjectId(f.name), createdAt: key(new Date()), logged: 0 };
+      : { ...f, id: newSubjectId(f.name), createdAt: key(new Date()), log: [] };
     onSave(toStored({
       ...base, type: "problem", syllabus: syl.id, chapters: rows.length,
       refs: rows.map((r) => r.ref), names: rows.map((r) => r.name),
@@ -2249,7 +2380,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
     onSave(toStored({
       ...f, chapters: n,
       id: newSubjectId(f.name),
-      createdAt: key(new Date()), logged: 0,
+      createdAt: key(new Date()), log: [],
       names: parsed.map((c) => c.name),
       diff: Array(n).fill(2),
       done: Array(n).fill(false),
@@ -2274,7 +2405,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
       onSave(toStored({
         ...f, chapters: n,
         id: newSubjectId(f.name),
-        createdAt: key(new Date()), logged: 0,
+        createdAt: key(new Date()), log: [],
         names: Array(n).fill(""),
         diff: Array(n).fill(2),
         done: Array(n).fill(false),
@@ -2283,16 +2414,22 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
     }
   };
 
-  const pill = (on) => ({
-    flex: 1, background: on ? C.amber : C.cardHi, color: on ? C.onAccent : C.dim,
-    border: `1px solid ${on ? C.amber : C.line}`, borderRadius: 12, padding: "12px 4px", fontSize: 13, fontWeight: 650,
-  });
+  const optionRow = { width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: "13px 14px", marginBottom: 8, color: C.text };
+  const textLink = { background: "none", color: C.accentText, fontSize: 13, fontWeight: 600, padding: "2px 0", marginBottom: 14, borderRadius: 6 };
+  const cancelBtn = { flex: 1, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "17px 0", borderRadius: 16, fontSize: 15, fontWeight: 600 };
+  const chevron = <span aria-hidden="true" style={{ color: C.dim, fontSize: 18 }}>›</span>;
+  const changeMethod = (
+    <Tap className="focus-ring" onClick={() => setStarted(false)} style={textLink}>
+      ‹ Change how you add this
+    </Tap>
+  );
 
   return (
     <div style={sheetOverlay(desktop, 80)} onClick={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
         className="sheetbox"
+        ref={boxRef}
         style={{ ...sheetPanel(desktop), padding: desktop ? "16px 28px 28px" : "10px 24px 30px", overflowY: "auto" }}
       >
         <SheetHandle desktop={desktop} />
@@ -2300,33 +2437,41 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
           {mode === "edit" ? "Edit subject" : "Add a subject"}
         </h2>
 
-        {mode !== "edit" && (
+        {!started ? (
           <>
-            <label style={lbl}>Chapters from</label>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 18 }}>
-              <Tap className="focus-ring" aria-pressed={!srcId} onClick={() => chooseSource(null)} style={pill(!srcId)}>
-                Your own
+            <div style={{ fontSize: 16, fontWeight: 650, marginBottom: 12 }}>How do you want to add this?</div>
+            {METHODS.map((m) => (
+              <Tap key={m.title} className="focus-ring card" onClick={() => chooseSource(m.id)} style={{ ...optionRow, padding: "16px 16px", marginBottom: 10 }}>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 16, fontWeight: 650 }}>{m.title}</span>
+                  <span style={{ display: "block", fontSize: 13, color: C.dim, marginTop: 3, lineHeight: 1.45 }}>{m.sub}</span>
+                </span>
+                {chevron}
               </Tap>
-              <Tap className="focus-ring" aria-pressed={pasting} onClick={() => chooseSource(PASTE)} style={pill(pasting)}>
-                Paste portions
+            ))}
+            <span style={{ ...lbl, marginTop: 18 }}>Pre-loaded syllabus</span>
+            {SYLLABI.map((s) => (
+              <Tap key={s.id} className="focus-ring card" onClick={() => chooseSource(s.id)} style={optionRow}>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: "block", fontSize: 15, fontWeight: 600 }}>NCERT Class 12 Maths</span>
+                  <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 2 }}>Every chapter, with its questions, marks and difficulty.</span>
+                </span>
+                {chevron}
               </Tap>
-              <Tap className="focus-ring" aria-pressed={uploading} onClick={() => chooseSource(UPLOAD)} style={pill(uploading)}>
-                Upload PDF
-              </Tap>
-              {SYLLABI.map((s) => (
-                <Tap key={s.id} className="focus-ring" aria-pressed={srcId === s.id} onClick={() => chooseSource(s.id)} style={pill(srcId === s.id)}>
-                  NCERT Class 12 Maths
-                </Tap>
-              ))}
+            ))}
+            <div style={{ display: "flex", marginTop: 16 }}>
+              <Tap onClick={onClose} style={cancelBtn}>Cancel</Tap>
             </div>
           </>
-        )}
+        ) : (
+        <>
+        {mode !== "edit" && changeMethod}
 
         <label style={lbl}>Subject</label>
         <input style={{ ...inputStyle, marginBottom: 18 }} placeholder="Biology" value={f.name} onChange={(e) => set("name", e.target.value)} />
 
-        <label style={lbl}>Exam date</label>
-        <input type="date" style={{ ...inputStyle, marginBottom: 18 }} value={f.date} onChange={(e) => set("date", e.target.value)} />
+        <label style={lbl} htmlFor="exam-date">Exam date</label>
+        <input id="exam-date" type="date" style={{ ...inputStyle, marginBottom: 18 }} value={f.date} onChange={(e) => set("date", e.target.value)} />
 
         {syl ? (
           <>
@@ -2358,7 +2503,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 14.5, fontWeight: 600, color: on ? C.text : C.dim }}>{c.no}. {c.name}</div>
                     <div style={{ fontSize: 12, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
-                      {c.questions} questions · ~{fmtMarks(c.marksEst)} marks · {(c.hours.total * factor.factor * pm).toFixed(1)}h
+                      {c.questions} questions · ~{fmtMarks(c.marksEst)} marks · {fmtH(c.hours.total * factor.factor * pm)}
                     </div>
                   </div>
                   <span style={{ fontSize: 12, color: dm.color, fontWeight: 650, flexShrink: 0 }}>{dm.label}</span>
@@ -2368,7 +2513,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
             <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 14px", margin: "4px 0 10px", fontSize: 13.5, lineHeight: 1.5 }}>
               <b style={{ fontWeight: 650 }}>{chosen.length}</b> chapter{chosen.length === 1 ? "" : "s"} · about{" "}
               <b style={{ fontWeight: 650 }}>{fmtMarks(chosenMarks)}</b> of {syl.totalMarks} marks ·{" "}
-              <b style={{ fontWeight: 650, color: C.accentText }}>{Math.round(chosenHours)}h</b> of work for you
+              <b style={{ fontWeight: 650, color: C.accentText }}>{fmtH(chosenHours)}</b> of work for you
             </div>
             <div style={{ fontSize: 12, color: C.dim, marginBottom: 18, lineHeight: 1.5 }}>
               Questions are every numbered NCERT exercise question (2026-27 reprint). CBSE gives marks per
@@ -2376,91 +2521,11 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
               combines how many questions a chapter has with how hard its ideas are.
             </div>
           </>
-        ) : uploading ? (
-          <div style={{ marginBottom: 18 }}>
-            <label
-              htmlFor="portions-pdf"
-              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-              onDragLeave={() => setDragging(false)}
-              onDrop={(e) => { e.preventDefault(); setDragging(false); uploadPdf(e.dataTransfer.files?.[0]); }}
-              style={{
-                display: "block", position: "relative", textAlign: "center", cursor: "pointer",
-                border: `1.5px dashed ${dragging ? C.accent : C.lineHi}`, borderRadius: 16,
-                background: dragging ? C.accentSoft : C.raised, padding: "26px 16px",
-                transition: `background .2s ${EASE}, border-color .2s ${EASE}`,
-              }}
-            >
-              <input
-                id="portions-pdf"
-                type="file"
-                accept="application/pdf,.pdf"
-                onChange={(e) => { uploadPdf(e.target.files?.[0]); e.target.value = ""; }}
-                style={{ position: "absolute", width: 1, height: 1, opacity: 0, overflow: "hidden" }}
-              />
-              <div style={{ fontSize: 15, fontWeight: 600 }}>{pdf.fileName && pdf.status !== "idle" ? pdf.fileName : "Choose your portions PDF"}</div>
-              <div style={{ fontSize: 12.5, color: C.dim, marginTop: 4 }}>
-                {pdf.status === "idle" ? "Drop it here, or tap to pick one · up to 5 MB" : "Tap to choose a different file"}
-              </div>
-            </label>
-
-            <div aria-live="polite">
-              {pdf.status === "reading" && (
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, fontSize: 14, color: C.dim }}>
-                  <span className="pdf-spin" aria-hidden="true" style={{ width: 16, height: 16, borderRadius: 99, border: `2px solid ${C.line}`, borderTopColor: C.accent }} />
-                  Reading your portions…
-                </div>
-              )}
-
-              {pdf.status === "error" && (
-                <div role="alert" style={{ ...notice, marginTop: 14, fontSize: 14, lineHeight: 1.5 }}>
-                  {pdf.error}
-                  <Tap
-                    className="focus-ring"
-                    onClick={() => chooseSource(PASTE)}
-                    style={{ display: "block", width: "100%", marginTop: 12, background: C.surface, color: C.text, border: `1px solid ${C.line}`, padding: "11px 0", borderRadius: 12, fontSize: 14, fontWeight: 600 }}
-                  >
-                    Use Paste portions instead
-                  </Tap>
-                </div>
-              )}
-
-              {pdf.status === "done" && (
-                <div style={{ marginTop: 16 }}>
-                  <span style={lbl}>Subjects found — pick the one you're adding</span>
-                  {Object.entries(pdf.subjects).map(([subject, chapters]) => (
-                    <Tap
-                      key={subject}
-                      className="focus-ring card"
-                      onClick={() => pickPdfSubject(subject, chapters)}
-                      style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 14, padding: "13px 14px", marginBottom: 8, color: C.text }}
-                    >
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <span style={{ display: "block", fontSize: 15, fontWeight: 600, overflowWrap: "anywhere" }}>{subject}</span>
-                        <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 2 }}>
-                          {chapters.length} chapter{chapters.length === 1 ? "" : "s"}
-                        </span>
-                      </span>
-                      <span aria-hidden="true" style={{ color: C.dim, fontSize: 18 }}>›</span>
-                    </Tap>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
         ) : (
           <>
             {pasting ? (
               <>
-                {fromPdf && pdf.status === "done" && (
-                  <Tap
-                    className="focus-ring"
-                    onClick={() => setSrcId(UPLOAD)}
-                    style={{ background: "none", color: C.accentText, fontSize: 13, fontWeight: 600, padding: "2px 0", marginBottom: 10, borderRadius: 6 }}
-                  >
-                    ‹ Other subjects in {pdf.fileName}
-                  </Tap>
-                )}
-                <label style={lbl} htmlFor="portions">{fromPdf ? "Chapters read from your PDF" : "Paste your portions list"}</label>
+                <label style={lbl} htmlFor="portions">Paste your portions list</label>
                 <textarea
                   id="portions"
                   rows={7}
@@ -2508,11 +2573,6 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
                       </li>
                     ))}
                   </ol>
-                )}
-                {fromPdf && parsed.length > 0 && (
-                  <div role="note" style={{ ...notice, marginTop: -8, marginBottom: 18, fontSize: 13, lineHeight: 1.5 }}>
-                    Checked by you — AI can misread a PDF, so delete anything wrong before saving.
-                  </div>
                 )}
               </>
             ) : (
@@ -2587,6 +2647,8 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
             {mode === "edit" ? "Save changes" : "Save subject"}
           </Tap>
         </div>
+        </>
+        )}
       </div>
     </div>
   );
@@ -2603,6 +2665,12 @@ function Header({ title, sub }) {
 }
 
 const Icon = {
+  today: (c) => (
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style={{ stroke: c }} strokeWidth="2" strokeLinecap="round">
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4" />
+    </svg>
+  ),
   subjects: (c) => (
     <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style={{ stroke: c }} strokeWidth="2" strokeLinecap="round">
       <path d="M4 5h16M4 12h16M4 19h10" />
@@ -2627,17 +2695,18 @@ const Icon = {
   ),
 };
 
-/* Desktop navigation: the same four tabs as the phone's TabBar, always
+/* Desktop navigation: the same tabs as the phone's TabBar, always
    visible down the left edge. The subject detail page counts as Subjects. */
-function Sidebar({ screen, go, onAdd }) {
+function Sidebar({ screen, go, onAdd, onImport }) {
   const [hover, setHover] = useState(null);
   const tabs = [
+    { id: "today", label: "Today", icon: Icon.today },
     { id: "subjects", label: "Subjects", icon: Icon.subjects },
     { id: "reality", label: "Reality check", icon: Icon.reality },
     { id: "plan", label: "Plan", icon: Icon.plan },
     { id: "time", label: "Time", icon: Icon.time },
   ];
-  const current = screen === "detail" ? "subjects" : screen;
+  const current = screen === "detail" || screen === "import" ? "subjects" : screen === "timer" ? "today" : screen;
   const idx = tabs.findIndex((t) => t.id === current);
 
   return (
@@ -2687,6 +2756,13 @@ function Sidebar({ screen, go, onAdd }) {
       >
         Add a subject
       </Tap>
+      <Tap
+        className="focus-ring"
+        onClick={onImport}
+        style={{ width: "100%", marginTop: 8, background: "transparent", border: `1px solid ${C.lineHi}`, color: C.text, padding: "12px 0", borderRadius: 12, fontSize: 14.5, fontWeight: 600 }}
+      >
+        Import from PDF
+      </Tap>
     </nav>
   );
 }
@@ -2703,6 +2779,7 @@ function TabBar({ screen, go }) {
   useEffect(() => () => clearTimeout(timer.current), []);
 
   const tabs = [
+    { id: "today", label: "Today", icon: Icon.today },
     { id: "subjects", label: "Subjects", icon: Icon.subjects },
     { id: "reality", label: "Check", icon: Icon.reality },
     { id: "plan", label: "Plan", icon: Icon.plan },
@@ -2742,18 +2819,18 @@ function TabBar({ screen, go }) {
               key={t.id}
               onClick={() => { expand(); go(t.id, i > idx ? "fwd" : "back"); }}
               style={{
-                display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+                display: "flex", flexDirection: open ? "column" : "row", alignItems: "center", justifyContent: "center", gap: open ? 2 : 5,
                 flex: open ? "1 1 0" : "0 0 auto", minWidth: 0,
                 background: active ? C.surface : "transparent",
-                borderRadius: 99, padding: open ? "11px 4px" : "11px 13px", color: col,
+                borderRadius: open ? 22 : 99, padding: open ? "6px 2px" : "11px 12px", color: col,
                 transition: "background .3s cubic-bezier(.32,.72,0,1), padding .4s cubic-bezier(.32,.72,0,1)",
               }}
             >
               {t.icon(col)}
               <span
                 style={{
-                  fontSize: 12, fontWeight: 650, color: col,
-                  maxWidth: open ? 72 : 0, opacity: open ? 1 : 0,
+                  fontSize: 11, fontWeight: 650, color: col,
+                  maxWidth: open ? 72 : 0, maxHeight: open ? 16 : 0, opacity: open ? 1 : 0,
                   overflow: "hidden", whiteSpace: "nowrap", textOverflow: "clip",
                   transition: "max-width .4s cubic-bezier(.32,.72,0,1), opacity .3s cubic-bezier(.32,.72,0,1)",
                 }}

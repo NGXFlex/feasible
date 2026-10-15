@@ -271,3 +271,32 @@ export const inputStyle = {
   borderRadius: 12, padding: "13px 14px", fontSize: 16, fontFamily: FONT,
   width: "100%", outline: "none", boxSizing: "border-box",
 };
+
+/* number field you can actually clear while typing */
+export function NumField({ value, onChange, min = 0, max = 9999, style, placeholder, ...rest }) {
+  const [t, setT] = useState(String(value));
+  useEffect(() => { setT(String(value)); }, [value]);
+  const clamp = (n) => Math.min(max, Math.max(min, n));
+  return (
+    <input
+      inputMode="decimal"
+      {...rest}
+      value={t}
+      placeholder={placeholder}
+      onFocus={(e) => e.target.select()}
+      onChange={(e) => {
+        const raw = e.target.value.replace(/[^0-9.]/g, "");
+        setT(raw);
+        const n = parseFloat(raw);
+        if (!isNaN(n)) onChange(clamp(n));
+      }}
+      onBlur={() => {
+        const n = parseFloat(t);
+        const v = isNaN(n) ? min : clamp(n);
+        onChange(v);
+        setT(String(v));
+      }}
+      style={style}
+    />
+  );
+}

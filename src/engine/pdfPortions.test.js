@@ -1,7 +1,10 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { GoogleGenerativeAI, GoogleGenerativeAIFetchError } from "@google/generative-ai";
-import { checkPdfPayload, parseModelReply, describeGeminiError, base64Bytes, MAX_PDF_BYTES } from "./pdfPortions.js";
+import {
+  checkPdfPayload, parseModelReply, describeGeminiError, base64Bytes, normaliseExamDate, MAX_PDF_BYTES,
+  draftFromPdf, draftChapters, draftIssues, subjectFromDraft,
+} from "./pdfPortions.js";
 import { parsePortions } from "./portions.js";
 import handler from "../../api/parse-portions.js";
 
@@ -25,22 +28,63 @@ test("pdf payload: base64 size is the decoded size", () => {
 });
 
 test("model reply: fences stripped, numbering cleaned, junk dropped", () => {
-  const reply = '```json\n{ "Physics": ["1. Electric Charges", "2) Current Electricity", 7, ""], "Empty": [], "Bad": "x", "Chemistry": ["Solutions;"] }\n```';
-  assert.deepEqual(parseModelReply(reply), {
-    Physics: ["Electric Charges", "Current Electricity"],
-    Chemistry: ["Solutions"],
+  const body = JSON.stringify({ subjects: [
+    { name: "Physics", examDate: "2026-03-12", chapters: ["1. Electric Charges", "2) Current Electricity", 7, ""] },
+    { name: "Empty", examDate: null, chapters: [] },
+    { name: "", chapters: ["x"] },
+    "junk",
+    { name: "Chemistry", chapters: ["Solutions;"] },
+  ] });
+  assert.deepEqual(parseModelReply("```json\n" + body + "\n```"), {
+    subjects: [
+      { name: "Physics", examDate: "2026-03-12", chapters: ["Electric Charges", "Current Electricity"] },
+      { name: "Chemistry", examDate: null, chapters: ["Solutions"] },
+    ],
   });
-  assert.deepEqual(parseModelReply("{}"), {});
+  assert.deepEqual(parseModelReply('{ "subjects": [] }'), { subjects: [] });
+  assert.deepEqual(parseModelReply("{}"), { subjects: [] });
+});
+
+test("model reply: a subject with a date but no chapters is kept (timetable only)", () => {
+  const r = parseModelReply('{"subjects":[{"name":"English","examDate":"2026-03-04","chapters":[]}]}');
+  assert.deepEqual(r.subjects, [{ name: "English", examDate: "2026-03-04", chapters: [] }]);
+});
+
+test("model reply: a subject listed twice is merged", () => {
+  const r = parseModelReply(JSON.stringify({ subjects: [
+    { name: "Maths", examDate: null, chapters: ["Matrices"] },
+    { name: "maths", examDate: "2026-03-09", chapters: ["Integrals"] },
+  ] }));
+  assert.deepEqual(r.subjects, [{ name: "Maths", examDate: "2026-03-09", chapters: ["Matrices", "Integrals"] }]);
+});
+
+test("model reply: the older { subject: [chapters] } shape still reads", () => {
+  assert.deepEqual(parseModelReply('{"Biology":["1. Genetics"]}'), { subjects: [{ name: "Biology", examDate: null, chapters: ["Genetics"] }] });
+});
+
+test("exam dates: ISO kept, numeric dates read as DD/MM, anything else null", () => {
+  assert.equal(normaliseExamDate("2026-03-12"), "2026-03-12");
+  assert.equal(normaliseExamDate("2026-3-2"), "2026-03-02");
+  assert.equal(normaliseExamDate("12/03/26"), "2026-03-12");
+  assert.equal(normaliseExamDate("12-03-2026"), "2026-03-12");
+  assert.equal(normaliseExamDate("05.04.2026"), "2026-04-05");
+  assert.equal(normaliseExamDate("31/02/2026"), null);
+  assert.equal(normaliseExamDate("2026-13-01"), null);
+  assert.equal(normaliseExamDate("12 March 2026"), null);
+  assert.equal(normaliseExamDate(null), null);
+  assert.equal(normaliseExamDate(""), null);
 });
 
 test("model reply: anything that isn't the JSON object asked for is a readable error", () => {
   assert.throws(() => parseModelReply("Sure! Here are the chapters:"), /wasn't a chapter list/);
   assert.throws(() => parseModelReply('["a","b"]'), /wasn't a chapter list/);
+  assert.throws(() => parseModelReply('{"subjects":"none"}'), /wasn't a chapter list/);
 });
 
 test("model reply: each subject capped at 60 chapters", () => {
   const many = Array.from({ length: 75 }, (_, i) => `Topic ${i + 1}`);
-  assert.equal(parseModelReply(JSON.stringify({ Big: many })).Big.length, 60);
+  const r = parseModelReply(JSON.stringify({ subjects: [{ name: "Big", chapters: many }] }));
+  assert.equal(r.subjects[0].chapters.length, 60);
 });
 
 test("gemini errors: quota says so and points to Paste portions", () => {
@@ -55,6 +99,43 @@ test("gemini errors: quota says so and points to Paste portions", () => {
 test("parser: PDF chapter names keep all-caps names the paste parser treats as headings", () => {
   assert.deepEqual(parsePortions("OPTICS\nWave Optics").map((c) => c.name), ["Wave Optics"]);
   assert.deepEqual(parsePortions("OPTICS\nWave Optics", { keepHeadings: true }).map((c) => c.name), ["OPTICS", "Wave Optics"]);
+});
+
+/* ------------------------------ importing ------------------------------ */
+test("import: a draft starts from what was read, with plain defaults", () => {
+  const d = draftFromPdf({ name: "Physics", examDate: "2026-11-02", chapters: ["Optics", "Atoms"] }, "quick");
+  assert.equal(d.name, "Physics");
+  assert.equal(d.date, "2026-11-02");
+  assert.equal(d.dateFromPdf, true);
+  assert.deepEqual([d.confidence, d.lastScore, d.pace, d.type], [3, 60, "quick", "theory"]);
+  assert.deepEqual(draftChapters(d), ["Optics", "Atoms"]);
+  assert.deepEqual(draftIssues(d), {});
+});
+
+test("import: no exam date, no chapters or no name can't be saved", () => {
+  const d = draftFromPdf({ name: "English", examDate: null, chapters: [] });
+  assert.equal(d.dateFromPdf, false);
+  const issues = draftIssues(d);
+  assert.match(issues.date, /exam date/);
+  assert.match(issues.chapters, /at least one chapter/);
+  assert.match(draftIssues({ ...d, name: "  ", date: "2026-11-02", chaptersText: "Flamingo" }).name, /name/);
+  assert.deepEqual(draftIssues({ ...d, date: "2026-11-02", chaptersText: "Flamingo" }), {});
+});
+
+test("import: edited chapters are what gets saved, capped at 60, headings kept", () => {
+  const d = { ...draftFromPdf({ name: "Chem", examDate: "2026-11-02", chapters: ["Solutions"] }), chaptersText: "OPTICS\n\n2. Amines\n" };
+  const s = subjectFromDraft({ ...d, name: " Chem ", lastScore: 71.6, confidence: 4 }, { id: "c1", today: "2026-10-15" });
+  assert.deepEqual(s.names, ["OPTICS", "Amines"]);
+  assert.equal(s.chapters, 2);
+  assert.equal(s.name, "Chem");
+  assert.equal(s.lastScore, 72);
+  assert.equal(s.confidence, 4);
+  assert.equal(s.createdAt, "2026-10-15");
+  assert.deepEqual(s.done, [false, false]);
+  assert.deepEqual(s.weight, [2, 2]);
+  assert.deepEqual(s.log, []);
+  const many = { ...d, chaptersText: Array.from({ length: 70 }, (_, i) => `Topic ${i + 1}`).join("\n") };
+  assert.equal(subjectFromDraft(many, { id: "x", today: "2026-10-15" }).chapters, 60);
 });
 
 /* ------------------------------ the function ------------------------------ */
@@ -82,26 +163,28 @@ test("function: POST only, and a missing key is a clear error", async () => {
   assert.match(r.body.error, /isn't set up/);
 });
 
-test("function: sends the PDF inline and returns the cleaned chapter list", async () => {
+test("function: sends the PDF inline and returns the cleaned subjects", async () => {
   process.env.GEMINI_API_KEY = "test-key";
   let sent;
+  const reply = JSON.stringify({ subjects: [{ name: "Biology", examDate: "2026-03-12", chapters: ["1. Reproduction", "2. Genetics"] }] });
   fakeGemini(async (parts) => {
     sent = parts;
-    return { response: { text: () => '```json\n{"Biology": ["1. Reproduction", "2. Genetics"]}\n```' } };
+    return { response: { text: () => "```json\n" + reply + "\n```" } };
   });
   const r = await call({ body: { pdf: PDF } });
   assert.equal(r.code, 200);
-  assert.deepEqual(r.body, { Biology: ["Reproduction", "Genetics"] });
+  assert.deepEqual(r.body, { subjects: [{ name: "Biology", examDate: "2026-03-12", chapters: ["Reproduction", "Genetics"] }] });
   assert.deepEqual(sent[0], { inlineData: { mimeType: "application/pdf", data: PDF } });
   assert.match(sent[1].text, /Return ONLY valid JSON/);
+  assert.match(sent[1].text, /examDate/);
 });
 
 test("function: a JSON string body works too", async () => {
   process.env.GEMINI_API_KEY = "test-key";
-  fakeGemini(async () => ({ response: { text: () => "{}" } }));
+  fakeGemini(async () => ({ response: { text: () => '{ "subjects": [] }' } }));
   const r = await call({ body: JSON.stringify({ pdf: PDF }) });
   assert.equal(r.code, 200);
-  assert.deepEqual(r.body, {});
+  assert.deepEqual(r.body, { subjects: [] });
 });
 
 test("function: oversized and empty uploads never reach Gemini", async () => {

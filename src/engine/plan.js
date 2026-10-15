@@ -1,6 +1,7 @@
 import { getSyllabus, readinessFactor, dailyNeed } from "./syllabusEngine.js";
 import { marksFromWeights } from "./portions.js";
 import { shareDays } from "./schedule.js";
+import { loggedTotal, loggedOn } from "./log.js";
 
 /* ------------------------------------------------------------------ */
 /*  The whole plan, from saved subjects and study time to everything    */
@@ -145,7 +146,7 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
       raw += cost;
       outstanding.push({ i, d, cost, name: names[i] || `Chapter ${i + 1}` });
     }
-    const logged = Math.max(0, Number(s.logged) || 0);
+    const logged = loggedTotal(s);
     return {
       s: { ...s, chapters, done, names, logged }, meta, diffs, doneCount, remaining, baseChapter, raw, factor, costs, syl, pm, chapterMarks,
       marks: syl || chapterMarks ? marks : null, marksLeft: syl || chapterMarks ? marksLeft : null,
@@ -200,6 +201,42 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
   });
 
   return { subjects: results, passed, spare: sim.spare, capacity: sim.capacity };
+}
+
+/* ------------------------------- priority -------------------------------
+   Which subject first: urgency = hours still needed / study days left
+   before that exam, i.e. what it needs from each of its days. The more it
+   needs a day, the sooner it slips if you fall behind. An exam with no
+   study days left and work still to do is the most urgent of all. */
+export function urgencyOf(s) {
+  if (s.perDay != null) return s.perDay;
+  return s.needed > 0 ? Infinity : 0;
+}
+export const rankByUrgency = (subjects) =>
+  [...subjects].sort((a, b) => urgencyOf(b) - urgencyOf(a) || startOfDay(a.date) - startOfDay(b.date));
+
+/* --------------------------------- today ---------------------------------
+   Today's hours from the day-by-day simulation. The day is planned as it
+   stood this morning (hours logged today don't shrink today's share), and
+   what has been logged today comes off each subject's share.
+   Returns { planned, done, left, capacity, rows } with rows in priority
+   order: { id, name, date, sameName, planned, done, left }. */
+export function todayPlan(subjects, time, today = new Date()) {
+  const day = key(today);
+  const morning = subjects.map((s) => (Array.isArray(s.log) ? { ...s, log: s.log.filter((e) => e?.d !== day) } : s));
+  const plan = analysePlan(morning, time, today);
+  const t0 = startOfDay(today).getTime();
+  const rows = rankByUrgency(plan.subjects).map((s) => {
+    const planned = s.days.filter((x) => startOfDay(x.d).getTime() === t0).reduce((t, x) => t + x.h, 0);
+    const done = loggedOn(subjects.find((o) => o.id === s.id), day);
+    return { id: s.id, name: s.name, date: s.date, sameName: s.sameName, planned, done, left: Math.max(0, planned - done) };
+  });
+  const sum = (k) => rows.reduce((t, r) => t + r[k], 0);
+  return {
+    planned: sum("planned"), done: sum("done"), left: sum("left"),
+    capacity: hoursOnDay(today, time.wd, time.we, time.ov ?? {}),
+    rows,
+  };
 }
 
 /* Learn / Practice / Revise: the hours a subject is given, split by its
