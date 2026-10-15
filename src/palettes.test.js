@@ -5,9 +5,7 @@ import { PALETTES, SEMANTIC, DEFAULT_PALETTE, tokens, contrast, paletteCss, pale
 
 test("palettes: palettes.css is up to date with palettes.js (npm run palettes)", () => {
   // line endings aside (git may check the file out with CRLF on Windows)
-  assert.equal(readFileSync(new URL("./palettes.css", import.meta.url), "utf8").replace(/
-/g, "
-"), paletteCss());
+  assert.equal(readFileSync(new URL("./palettes.css", import.meta.url), "utf8").replace(/\r\n/g, "\n"), paletteCss());
 });
 
 test("palettes: five palettes, each with a light and a dark set", () => {
