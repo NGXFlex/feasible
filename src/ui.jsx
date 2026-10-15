@@ -1,4 +1,5 @@
 import React, { Children, useEffect, useState } from "react";
+import { paletteById } from "./palettes.js";
 
 /* ------------------------------------------------------------------ */
 /*  Shared look: colour tokens, font, the tap button, the text input    */
@@ -85,14 +86,9 @@ export const resolveTheme = (theme) =>
     ? theme
     : typeof window !== "undefined" && window.matchMedia?.(darkQuery).matches ? "dark" : "light";
 
-const MARK_COLORS = {
-  light: { accent: "#E8554E", dim: "#6F645B", bg: "#F5F1EC" },
-  dark: { accent: "#FF7A70", dim: "#A3948A", bg: "#16110F" },
-};
-
-/* The tab icon and the browser chrome colour follow the theme in use */
-function paintChrome(resolved) {
-  const c = MARK_COLORS[resolved];
+/* The tab icon and the browser chrome colour follow the palette and mode in use */
+function paintChrome(resolved, palette) {
+  const c = paletteById(palette)[resolved];
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">${markBars(c.accent, c.dim)}</svg>`;
   let icon = document.querySelector('link[rel="icon"]');
   if (!icon) { icon = document.createElement("link"); icon.rel = "icon"; document.head.appendChild(icon); }
@@ -103,17 +99,18 @@ function paintChrome(resolved) {
   meta.content = c.bg;
 }
 
-export function useTheme(theme) {
+export function useTheme(theme, palette) {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    paintChrome(resolveTheme(theme));
+    document.documentElement.dataset.palette = paletteById(palette).id;
+    paintChrome(resolveTheme(theme), palette);
     if (theme !== "system") return;
     const mq = window.matchMedia?.(darkQuery);
     if (!mq) return;
-    const on = () => paintChrome(resolveTheme("system"));
+    const on = () => paintChrome(resolveTheme("system"), palette);
     mq.addEventListener("change", on);
     return () => mq.removeEventListener("change", on);
-  }, [theme]);
+  }, [theme, palette]);
 }
 
 /* ------------------------------ mark ------------------------------

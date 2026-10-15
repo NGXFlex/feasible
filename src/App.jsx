@@ -2,8 +2,9 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   C, FONT, EASE, Tap, inputStyle, useIsDesktop, useSplit, sheetOverlay, sheetPanel, SheetHandle,
   SIDEBAR_W, CONTENT_MAX, MOBILE_MAX, SP, THEMES, useTheme, Mark, CardGrid, Split, SectionLabel,
-  card, hero, tinted, notice, choice, NumField,
+  card, hero, tinted, notice, choice, NumField, useMedia,
 } from "./ui.jsx";
+import { PALETTES, DEFAULT_PALETTE, paletteById, tokens as paletteTokens } from "./palettes.js";
 import Login from "./Login.jsx";
 import ImportPdf from "./ImportPdf.jsx";
 import Timer, { readSession, writeSession, sessionActive, newSession } from "./Timer.jsx";
@@ -330,6 +331,8 @@ export default function App() {
   const [ov, setOv] = useState({});
   const [pace, setPace] = useState("steady");
   const [theme, setTheme] = useState("system");   // "light" | "dark" | "system"
+  const [palette, setPalette] = useState(DEFAULT_PALETTE);
+  const [back, setBack] = useState(null);         // where Plan or Time returns to on a phone (they aren't tabs there)
   const [subjects, setSubjects] = useState([]);
   const [openId, setOpenId] = useState(null);
   const [sheet, setSheet] = useState(null); // null | {mode:'add'} | {mode:'edit', subject}
@@ -353,6 +356,7 @@ export default function App() {
     setOv(s?.ov ?? {});
     setPace(s?.pace ?? "steady");
     setTheme(THEMES.some((t) => t.id === s?.theme) ? s.theme : "system");
+    setPalette(paletteById(s?.palette).id);
     // hours studied used to be one total; they're dated entries now
     setSubjects(Array.isArray(s?.subjects) ? s.subjects.map((x) => migrateLog(x, key(new Date()))) : []);
     setOnboarded(!!s?.onboarded);
@@ -405,19 +409,22 @@ export default function App() {
   /* autosave */
   useEffect(() => {
     if (!ready || paused) return;
-    saveState({ wd, we, ov, pace, theme, subjects, onboarded }, setSync);
-  }, [ready, paused, wd, we, ov, pace, theme, subjects, onboarded]);
+    saveState({ wd, we, ov, pace, theme, palette, subjects, onboarded }, setSync);
+  }, [ready, paused, wd, we, ov, pace, theme, palette, subjects, onboarded]);
 
-  useTheme(theme);
+  useTheme(theme, palette);
 
   const go = (s, d = "fwd") => { setDir(d); setScreen(s); };
+  /* Plan and Time aren't phone tabs: opened from Today or Settings, they come back there */
+  const openFrom = (s, from) => { setBack(from); go(s); };
 
   /* Android hardware back: close what's open instead of quitting the app */
   useEffect(() => {
     const handleBack = (e) => {
       if (sheet) { e?.preventDefault?.(); setSheet(null); return true; }
       if (screen === "login") { e?.preventDefault?.(); leaveLogin(); return true; }
-      if (screen === "timer") { e?.preventDefault?.(); closeTimer(); return true; }
+      if (screen === "timer" && session && session.from !== "timer") { e?.preventDefault?.(); closeTimer(); return true; }
+      if ((screen === "plan" || screen === "time") && back && !desktop) { e?.preventDefault?.(); go(back, "back"); return true; }
       if (screen === "detail" || screen === "import") { e?.preventDefault?.(); go("subjects", "back"); return true; }
       if (screen !== "today" && screen !== "onboard") {
         e?.preventDefault?.(); go("today", "back"); return true;
@@ -430,7 +437,7 @@ export default function App() {
       document.removeEventListener("backbutton", handleBack);
       window.removeEventListener("popstate", handleBack);
     };
-  }, [sheet, screen, loginFrom, loginFirst, session]);
+  }, [sheet, screen, loginFrom, loginFirst, session, back, desktop]);
   const flash = (m) => { setToast(m); setTimeout(() => setToast(null), 2200); };
 
   /* ---- accounts ----
@@ -596,9 +603,9 @@ export default function App() {
     }
   `;
 
-  useEffect(() => { if (screen === "timer" && !session) go("today", "back"); }, [screen, session]);
-
-  const tabbed = ["today", "subjects", "reality", "plan", "time"].includes(screen);
+  // phone tabs; Plan and Time open from Today and Settings as full screens with a way back
+  const tabbed = ["today", "subjects", "reality", "timer", "settings"].includes(screen);
+  const subBack = !desktop && back ? () => go(back, "back") : null;
   /* Desktop: a sidebar stays on every screen after onboarding and login,
      and replaces the floating tab bar. Phones keep the tab bar. */
   const withNav = desktop && ready && screen !== "onboard" && screen !== "login";
@@ -650,7 +657,8 @@ export default function App() {
             onStart={(id) => openTimer(id, "today")}
             onResume={() => go("timer")}
             onOpen={(id) => { setOpenId(id); go("detail"); }}
-            onTime={() => go("time")}
+            onTime={() => openFrom("time", "today")}
+            onPlan={() => openFrom("plan", "today")}
             {...emptyActions}
           />
         )}
@@ -679,28 +687,35 @@ export default function App() {
               flash("Changes confirmed");
             }} />
         )}
-        {screen === "plan" && <Plan data={analysis} {...emptyActions} />}
+        {screen === "plan" && <Plan data={analysis} onBack={subBack} backLabel={back === "settings" ? "Settings" : "Today"} {...emptyActions} />}
         {screen === "time" && (
           <TimeScreen
-            wd={wd} we={we} ov={ov} pace={pace} lastExam={lastExam}
-            theme={theme} onTheme={setTheme}
-            account={cloudApi ? account : undefined}
-            onSignIn={() => openLogin("time")}
-            onSignOut={signOutNow}
+            wd={wd} we={we} ov={ov} lastExam={lastExam}
+            onBack={subBack} backLabel={back === "today" ? "Today" : "Settings"}
             onSaveWd={(v) => { setWd(v); flash("Changes confirmed"); }}
             onSaveWe={(v) => { setWe(v); flash("Changes confirmed"); }}
-            onSavePace={(v) => { setPace(v); flash("Changes confirmed"); }}
-            onReset={() => {
-              setSubjects([]);
-              setOv({}); setWd(2.5); setWe(5); setPace("steady");
-              setOnboarded(false); go("onboard", "back");
-            }}
             onSetDay={(k, v, d) => { setOv((p) => ({ ...p, [k]: v })); flash("Changes confirmed"); }}
             onResetDay={(k, d) => { setOv((p) => { const n = { ...p }; delete n[k]; return n; }); flash("Reset to default"); }}
             setOverlay={setOverlay}
           />
         )}
-        {screen === "timer" && session && (
+        {screen === "settings" && (
+          <Settings
+            theme={theme} onTheme={setTheme}
+            palette={palette} onPalette={setPalette}
+            pace={pace} onSavePace={(v) => { setPace(v); flash("Changes confirmed"); }}
+            wd={wd} we={we} onOpenTime={() => openFrom("time", "settings")}
+            account={cloudApi ? account : undefined}
+            onSignIn={() => openLogin("settings")}
+            onSignOut={signOutNow}
+            onReset={() => {
+              setSubjects([]);
+              setOv({}); setWd(2.5); setWe(5); setPace("steady");
+              setOnboarded(false); go("onboard", "back");
+            }}
+          />
+        )}
+        {screen === "timer" && (session ? (
           <Timer
             s={analysis.find((x) => x.id === session.subjectId)}
             session={session}
@@ -708,7 +723,9 @@ export default function App() {
             onLog={(minutes, chapter) => logSession(session.subjectId, minutes, chapter)}
             onClose={closeTimer}
           />
-        )}
+        ) : (
+          <TimerPicker data={analysis} onPick={(id) => setSession(newSession(id, "timer"))} {...emptyActions} />
+        ))}
         {screen === "detail" && (
           <Detail
             s={analysis.find((x) => x.id === openId)}
@@ -932,11 +949,8 @@ function Stepper({ label, sub, value, set, delay }) {
 }
 
 /* ----------------------------- TIME ------------------------------ */
-function TimeScreen({ wd, we, ov, pace, theme, onTheme, lastExam, account, onSignIn, onSignOut, onSaveWd, onSaveWe, onSavePace, onSetDay, onResetDay, onReset, setOverlay }) {
+function TimeScreen({ wd, we, ov, lastExam, onSaveWd, onSaveWe, onSetDay, onResetDay, setOverlay, onBack, backLabel }) {
   const [pick, setPick] = useState(null);
-  const [reset, setReset] = useState(false);
-  const [outArm, setOutArm] = useState(false);
-  const signedIn = !!(account && !account.isAnonymous && account.email);
   useEffect(() => { setOverlay(!!pick); return () => setOverlay(false); }, [pick]);
   const total = Math.max(14, daysUntil(lastExam) + 1);
   const days = Array.from({ length: total }, (_, i) => addDays(new Date(), i));
@@ -964,7 +978,6 @@ function TimeScreen({ wd, we, ov, pace, theme, onTheme, lastExam, account, onSig
     <>
       <ConfirmStepper label="On a school day" sub="Default for Mon–Fri" value={wd} onCommit={onSaveWd} delay="0s" />
       <ConfirmStepper label="On a weekend day" sub="Default for Sat–Sun" value={we} onCommit={onSaveWe} delay=".05s" />
-      <PaceCard value={pace} onCommit={onSavePace} />
     </>
   );
 
@@ -1016,79 +1029,21 @@ function TimeScreen({ wd, we, ov, pace, theme, onTheme, lastExam, account, onSig
     </>
   );
 
-  const settings = (
-    <>
-      <ThemeCard value={theme} onChange={onTheme} />
-      {account !== undefined && (
-        <div className="rise card" style={{ ...card, marginBottom: SP.group }}>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>Account</div>
-          <div style={{ fontSize: 13, color: C.dim, marginTop: 3, lineHeight: 1.5, overflowWrap: "anywhere" }}>
-            {signedIn
-              ? <>Signed in as <span style={{ color: C.text }}>{account.email}</span>. Your plan syncs to every device you sign in on.</>
-              : "Your plan is tied to this device. Make an account to keep it if you switch phones or clear your browser."}
-          </div>
-          {signedIn ? (
-            <Tap
-              className="focus-ring"
-              onClick={() => (outArm ? onSignOut() : setOutArm(true))}
-              onPointerLeave={() => setOutArm(false)}
-              style={{
-                marginTop: 14, width: "100%",
-                background: outArm ? C.amber : C.cardHi, color: outArm ? C.onAccent : C.text,
-                border: `1px solid ${outArm ? C.amber : C.line}`, padding: "13px 0", borderRadius: 14,
-                fontSize: 14.5, fontWeight: 600, transition: "background .25s cubic-bezier(.32,.72,0,1), color .25s cubic-bezier(.32,.72,0,1)",
-              }}
-            >
-              {outArm ? "Tap again to sign out" : "Sign out"}
-            </Tap>
-          ) : (
-            <Tap
-              className="focus-ring"
-              onClick={onSignIn}
-              style={{ marginTop: 14, width: "100%", background: C.cardHi, color: C.text, border: `1px solid ${C.line}`, padding: "13px 0", borderRadius: 14, fontSize: 14.5, fontWeight: 600 }}
-            >
-              Sign in or create account
-            </Tap>
-          )}
-        </div>
-      )}
-
-      <div style={{ marginTop: SP.section - SP.group, paddingTop: 20, borderTop: `1px solid ${C.line}` }}>
-        <Tap
-          onClick={() => (reset ? onReset() : setReset(true))}
-          onPointerLeave={() => setReset(false)}
-          style={{
-            width: "100%", background: reset ? C.accent : "transparent",
-            border: `1px solid ${reset ? C.accent : C.line}`,
-            color: reset ? C.onAccent : C.dim, padding: "14px 0", borderRadius: 16,
-            fontSize: 14.5, fontWeight: 600, transition: "background .25s cubic-bezier(.32,.72,0,1), color .25s cubic-bezier(.32,.72,0,1)",
-          }}
-        >
-          {reset ? "Tap again to erase everything" : "Start over"}
-        </Tap>
-        <div style={{ fontSize: 12.5, color: C.dim, textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
-          Clears every subject and returns to the welcome screen.
-        </div>
-      </div>
-    </>
-  );
-
   return (
     <div style={{ padding: "60px 24px 0" }}>
+      {onBack && <BackLink label={backLabel} onClick={onBack} />}
       <Header title="Time" sub="What you actually have, not what you wish you had" />
 
       {split ? (
         <Split
           main={<>{totalCard}{specificDays}</>}
-          side={<><SectionLabel>Defaults</SectionLabel>{defaults}{settings}</>}
+          side={<><SectionLabel>Defaults</SectionLabel>{defaults}</>}
         />
       ) : (
         <>
           {totalCard}
           {defaults}
           {specificDays}
-          <div style={{ height: SP.section }} />
-          {settings}
         </>
       )}
 
@@ -1108,12 +1063,24 @@ function TimeScreen({ wd, we, ov, pace, theme, onTheme, lastExam, account, onSig
   );
 }
 
-/* Light, Dark or follow the device. Saved with the rest of the plan. */
-function ThemeCard({ value, onChange }) {
+/* ---------------------------- SETTINGS ---------------------------- */
+function BackLink({ label, onClick }) {
+  return (
+    <Tap className="focus-ring" onClick={onClick} style={{ background: "transparent", color: C.accentText, padding: 0, fontSize: 16, marginBottom: 22, fontWeight: 500 }}>
+      ‹ {label}
+    </Tap>
+  );
+}
+
+/* Mode (Light, Dark or follow the device) and palette, independent of each
+   other. Each swatch previews its palette in the mode in use. */
+function ThemeCard({ value, onChange, palette, onPalette }) {
+  const deviceDark = useMedia("(prefers-color-scheme: dark)");
+  const mode = value === "dark" || (value === "system" && deviceDark) ? "dark" : "light";
   return (
     <div className="rise card" style={{ ...card, marginBottom: SP.group }}>
-      <div style={{ fontSize: 15, fontWeight: 600 }}>Appearance</div>
-      <div role="radiogroup" aria-label="Appearance" style={{ display: "flex", gap: 4, marginTop: 14, padding: 4, background: C.raised, borderRadius: 12 }}>
+      <div style={{ fontSize: 15, fontWeight: 600 }}>Mode</div>
+      <div role="radiogroup" aria-label="Mode" style={{ display: "flex", gap: 4, marginTop: 12, padding: 4, background: C.raised, borderRadius: 12 }}>
         {THEMES.map((t) => {
           const on = value === t.id;
           return (
@@ -1135,11 +1102,165 @@ function ThemeCard({ value, onChange }) {
           );
         })}
       </div>
+
+      <div style={{ fontSize: 15, fontWeight: 600, marginTop: 20 }}>Palette</div>
+      <div role="radiogroup" aria-label="Palette" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))", gap: 10, marginTop: 12 }}>
+        {PALETTES.map((p) => {
+          const on = palette === p.id;
+          const t = paletteTokens(p, mode);
+          return (
+            <Tap
+              key={p.id}
+              role="radio"
+              aria-checked={on}
+              aria-label={p.name}
+              className="focus-ring"
+              onClick={() => onPalette(p.id)}
+              style={{ background: "transparent", padding: 0, color: C.text, display: "flex", flexDirection: "column", alignItems: "center", gap: 7 }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  display: "flex", alignItems: "flex-end", gap: 5, width: "100%", maxWidth: 76, height: 52, boxSizing: "border-box",
+                  padding: 9, borderRadius: 14, background: t.bg, border: `1px solid ${t.line}`,
+                  outline: on ? `2.5px solid ${C.accent}` : "2.5px solid transparent", outlineOffset: 3,
+                  transition: `outline-color .2s ${EASE}`,
+                }}
+              >
+                <span style={{ width: 18, height: 18, borderRadius: 99, background: t.accent, flexShrink: 0 }} />
+                <span style={{ flex: 1, height: 18, borderRadius: 6, background: t.surface, border: `1px solid ${t.line}` }} />
+              </span>
+              <span style={{ fontSize: 12, fontWeight: on ? 650 : 500, color: on ? C.text : C.dim, textAlign: "center", lineHeight: 1.3 }}>{p.name}</span>
+            </Tap>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-/* --------------------------- SUBJECTS --------------------------- */
+function Settings({ theme, onTheme, palette, onPalette, pace, onSavePace, wd, we, onOpenTime, account, onSignIn, onSignOut, onReset }) {
+  const [reset, setReset] = useState(false);
+  const [outArm, setOutArm] = useState(false);
+  const signedIn = !!(account && !account.isAnonymous && account.email);
+  const label = { marginTop: SP.section };
+  return (
+    <div style={{ padding: "60px 24px 0", maxWidth: 720 }}>
+      <Header title="Settings" sub="How the app looks, and what new subjects start with" />
+
+      <SectionLabel>Appearance</SectionLabel>
+      <ThemeCard value={theme} onChange={onTheme} palette={palette} onPalette={onPalette} />
+
+      <SectionLabel style={label}>Study defaults</SectionLabel>
+      <PaceCard value={pace} onCommit={onSavePace} />
+      <Tap
+        className="focus-ring card"
+        onClick={onOpenTime}
+        style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 18, padding: "16px 20px", color: C.text }}
+      >
+        <span style={{ flex: 1, minWidth: 0 }}>
+          <span style={{ display: "block", fontSize: 15, fontWeight: 600 }}>Study time</span>
+          <span style={{ display: "block", fontSize: 13, color: C.dim, marginTop: 3 }}>
+            {fmtH(wd)} on school days · {fmtH(we)} on weekend days · specific days
+          </span>
+        </span>
+        <span aria-hidden="true" style={{ color: C.dim, fontSize: 18 }}>›</span>
+      </Tap>
+
+      {account !== undefined && (
+        <>
+          <SectionLabel style={label}>Account</SectionLabel>
+          <div className="rise card" style={{ ...card }}>
+            <div style={{ fontSize: 15, fontWeight: 600 }}>{signedIn ? "Signed in" : "Not signed in"}</div>
+            <div style={{ fontSize: 13, color: C.dim, marginTop: 3, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+              {signedIn
+                ? <>As <span style={{ color: C.text }}>{account.email}</span>. Your plan syncs to every device you sign in on.</>
+                : "Your plan is tied to this device. Make an account to keep it if you switch phones or clear your browser."}
+            </div>
+            {signedIn ? (
+              <Tap
+                className="focus-ring"
+                onClick={() => (outArm ? onSignOut() : setOutArm(true))}
+                onPointerLeave={() => setOutArm(false)}
+                style={{
+                  marginTop: 14, width: "100%",
+                  background: outArm ? C.amber : C.cardHi, color: outArm ? C.onAccent : C.text,
+                  border: `1px solid ${outArm ? C.amber : C.line}`, padding: "13px 0", borderRadius: 14,
+                  fontSize: 14.5, fontWeight: 600, transition: "background .25s cubic-bezier(.32,.72,0,1), color .25s cubic-bezier(.32,.72,0,1)",
+                }}
+              >
+                {outArm ? "Tap again to sign out" : "Sign out"}
+              </Tap>
+            ) : (
+              <Tap
+                className="focus-ring"
+                onClick={onSignIn}
+                style={{ marginTop: 14, width: "100%", background: C.cardHi, color: C.text, border: `1px solid ${C.line}`, padding: "13px 0", borderRadius: 14, fontSize: 14.5, fontWeight: 600 }}
+              >
+                Sign in or create account
+              </Tap>
+            )}
+          </div>
+        </>
+      )}
+
+      <SectionLabel style={label}>Data</SectionLabel>
+      <Tap
+        onClick={() => (reset ? onReset() : setReset(true))}
+        onPointerLeave={() => setReset(false)}
+        style={{
+          width: "100%", background: reset ? C.accent : "transparent",
+          border: `1px solid ${reset ? C.accent : C.line}`,
+          color: reset ? C.onAccent : C.dim, padding: "14px 0", borderRadius: 16,
+          fontSize: 14.5, fontWeight: 600, transition: "background .25s cubic-bezier(.32,.72,0,1), color .25s cubic-bezier(.32,.72,0,1)",
+        }}
+      >
+        {reset ? "Tap again to erase everything" : "Start over"}
+      </Tap>
+      <div style={{ fontSize: 12.5, color: C.dim, textAlign: "center", marginTop: 10, lineHeight: 1.5 }}>
+        Clears every subject and your study time, and returns to the welcome screen.
+      </div>
+    </div>
+  );
+}
+
+/* ----------------------------- TIMER TAB ----------------------------- */
+/* The Timer tab with no session yet: choose what to study, most urgent first */
+function TimerPicker({ data, onPick, onAdd, onImport }) {
+  const ranked = rankByUrgency(data);
+  return (
+    <div style={{ padding: "60px 24px 0" }}>
+      <Header title="Timer" sub="Time a study session; it's added to your hours when you say so" />
+      {ranked.length === 0 ? (
+        <EmptyState title="No subjects to study yet" text="Add your exams, then pick one here to time a session against it." onAdd={onAdd} onImport={onImport} />
+      ) : (
+        <>
+          <SectionLabel>What are you studying?</SectionLabel>
+          <CardGrid>
+            {ranked.map((s, i) => (
+              <Tap
+                key={s.id}
+                className="card focus-ring"
+                onClick={() => onPick(s.id)}
+                style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 12, background: C.surface, border: `1px solid ${C.line}`, borderRadius: 18, padding: "16px 18px", color: C.text, animation: `rise .5s ${EASE} ${0.04 * i}s both` }}
+              >
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <SubjectName s={s} />
+                  <span style={{ display: "block", fontSize: 12.5, color: C.dim, marginTop: 3 }}>
+                    exam {fmtDate(s.date)}{s.perDay != null && s.needed > 0 ? ` · needs ${fmtH(s.perDay)} a day` : ""}
+                  </span>
+                </span>
+                <span aria-hidden="true" style={{ color: C.dim, fontSize: 18 }}>›</span>
+              </Tap>
+            ))}
+          </CardGrid>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* --------------------------- SUBJECTS --------------------------- *//* --------------------------- SUBJECTS --------------------------- */
 const dateChip = {
   display: "inline-block", fontSize: 12.5, fontWeight: 650, color: C.text, lineHeight: 1.3,
   background: C.raised, border: `1px solid ${C.lineHi}`, borderRadius: 99, padding: "2px 9px",
@@ -1342,7 +1463,7 @@ function Skeleton() {
 /* ------------------------------ TODAY ------------------------------ */
 const longDate = (d) => d.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" });
 
-function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, onAdd, onImport }) {
+function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, onPlan, onAdd, onImport }) {
   const next = day.rows.find((r) => r.left > 1e-6);
   const listed = day.rows.filter((r) => r.planned > 1e-6 || r.done > 1e-6);
   const resting = day.rows.filter((r) => r.planned <= 1e-6 && r.done <= 1e-6);
@@ -1434,6 +1555,13 @@ function Today({ day, data, passed, session, onStart, onResume, onOpen, onTime, 
           <div style={{ fontSize: 12.5, color: C.dim, marginTop: 16, lineHeight: 1.5 }}>
             From the day-by-day plan: today's {fmtH(day.capacity)} are shared between your subjects by how much each needs per day before its exam.
           </div>
+          <Tap
+            className="focus-ring"
+            onClick={onPlan}
+            style={{ width: "100%", marginTop: SP.group, background: "transparent", border: `1px solid ${C.line}`, color: C.text, padding: "14px 0", borderRadius: 16, fontSize: 15, fontWeight: 600 }}
+          >
+            See the full plan ›
+          </Tap>
         </>
       )}
     </div>
@@ -1584,7 +1712,7 @@ function SubjectOrder({ data }) {
   );
 }
 
-function Plan({ data, onAdd, onImport }) {
+function Plan({ data, onAdd, onImport, onBack, backLabel }) {
   const [open, setOpen] = useState(data[0]?.id ?? null);
   const split = useSplit();
 
@@ -1659,6 +1787,7 @@ function Plan({ data, onAdd, onImport }) {
 
   return (
     <div style={{ padding: "60px 24px 0" }}>
+      {onBack && <BackLink label={backLabel} onClick={onBack} />}
       <Header title="Plan" sub="Phases sized to how each subject behaves" />
       {data.length === 0 ? (
         <EmptyState
@@ -2687,6 +2816,18 @@ const Icon = {
       <path d="M8 3v4M16 3v4M3 11h18" />
     </svg>
   ),
+  timer: (c) => (
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style={{ stroke: c }} strokeWidth="2" strokeLinecap="round">
+      <circle cx="12" cy="13.5" r="7.5" />
+      <path d="M12 13.5V10M10 2.5h4M18.5 6.5l-1.3 1.3" />
+    </svg>
+  ),
+  settings: (c) => (
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style={{ stroke: c }} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  ),
   time: (c) => (
     <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style={{ stroke: c }} strokeWidth="2" strokeLinecap="round">
       <circle cx="12" cy="12" r="9" />
@@ -2704,9 +2845,11 @@ function Sidebar({ screen, go, onAdd, onImport }) {
     { id: "subjects", label: "Subjects", icon: Icon.subjects },
     { id: "reality", label: "Reality check", icon: Icon.reality },
     { id: "plan", label: "Plan", icon: Icon.plan },
+    { id: "timer", label: "Timer", icon: Icon.timer },
     { id: "time", label: "Time", icon: Icon.time },
+    { id: "settings", label: "Settings", icon: Icon.settings },
   ];
-  const current = screen === "detail" || screen === "import" ? "subjects" : screen === "timer" ? "today" : screen;
+  const current = screen === "detail" || screen === "import" ? "subjects" : screen;
   const idx = tabs.findIndex((t) => t.id === current);
 
   return (
@@ -2782,8 +2925,8 @@ function TabBar({ screen, go }) {
     { id: "today", label: "Today", icon: Icon.today },
     { id: "subjects", label: "Subjects", icon: Icon.subjects },
     { id: "reality", label: "Check", icon: Icon.reality },
-    { id: "plan", label: "Plan", icon: Icon.plan },
-    { id: "time", label: "Time", icon: Icon.time },
+    { id: "timer", label: "Timer", icon: Icon.timer },
+    { id: "settings", label: "Settings", icon: Icon.settings },
   ];
   const idx = tabs.findIndex((t) => t.id === screen);
 

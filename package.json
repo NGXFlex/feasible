@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
+    "palettes": "node scripts/build-palettes.mjs",
     "test": "node --test \"src/**/*.test.js\"",
     "preview": "vite preview"
   },

@@ -1,107 +1,17 @@
+@import "./palettes.css";
+
 /* ------------------------------------------------------------------
-   Colour tokens. Light is the default; data-theme on <html> picks one
-   ("light", "dark", or "system" to follow the device). Components read
-   these through C in ui.jsx, so switching theme never re-renders.
+   Colour tokens come from palettes.css (generated from palettes.js):
+   data-palette on <html> picks one of five palettes, data-theme picks
+   "light", "dark", or "system" to follow the device. Components read
+   them through C in ui.jsx, so switching never re-renders.
 
    shortfall and fits are reserved for the feasibility verdict.
    accent is for actions and active states; accentText is accent dark
    enough to read as small text (AA, 4.5:1) on every surface.
 ------------------------------------------------------------------- */
 :root {
-  color-scheme: light;
-  --bg: #F5F1EC;
-  --surface: #FFFBF7;
-  --raised: #EFE9E2;
-  --hover: #E8E1D8;
-  --line: #E2D9CF;
-  --lineHi: #CFC3B6;
-  --text: #1F1A16;
-  --dim: #6F645B;          /* #857A70 measured 3.5:1 on raised; this is 4.8 */
-  --accent: #E8554E;
-  --accentText: #AC4339;
-  --accentSoft: #FCE9E7;
-  --accentLine: #F4C7C2;
-  --onAccent: #1F1A16;     /* white on coral is 3.6:1; this is 4.8 */
-  --shortfall: #B3261E;
-  --fits: #16704F;
-  --info: #2F5FBF;
-
-  --wash-accent: rgba(232, 85, 78, .06);
-  --wash-shortfall: rgba(179, 38, 30, .06);
-  --wash-fits: rgba(22, 112, 79, .06);
-
-  --shadow: 0 1px 2px rgba(31, 26, 22, .04), 0 8px 24px rgba(31, 26, 22, .06);
-  --shadow-lift: 0 2px 4px rgba(31, 26, 22, .05), 0 14px 32px rgba(31, 26, 22, .09);
-  --shadow-pop: 0 12px 34px rgba(31, 26, 22, .16);
-  --glass: rgba(255, 251, 247, .78);
-  --scrim: rgba(31, 26, 22, .32);
-  --picker-filter: none;
   --ease: cubic-bezier(.32, .72, 0, 1);
-}
-
-/* the same dark values twice: once when chosen, once when following a dark device */
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #16110F;
-  --surface: #211A17;
-  --raised: #2C2320;
-  --hover: #372C28;
-  --line: #3A2F2A;
-  --lineHi: #50413A;
-  --text: #F7F1EA;
-  --dim: #A3948A;
-  --accent: #FF7A70;
-  --accentText: #FF7A70;
-  --accentSoft: #3A1F1C;
-  --accentLine: #5A2E29;
-  --onAccent: #16110F;
-  --shortfall: #FF4A3D;    /* deeper than the specified #FF5A4D so it stays apart from the coral */
-  --fits: #4ED6A0;
-  --info: #7BA6F5;
-
-  --wash-accent: rgba(255, 122, 112, .06);
-  --wash-shortfall: rgba(255, 74, 61, .06);
-  --wash-fits: rgba(78, 214, 160, .06);
-
-  --shadow: inset 0 1px 0 rgba(255, 255, 255, .05), 0 4px 20px rgba(0, 0, 0, .4);
-  --shadow-lift: inset 0 1px 0 rgba(255, 255, 255, .07), 0 8px 28px rgba(0, 0, 0, .5);
-  --shadow-pop: 0 12px 34px rgba(0, 0, 0, .55);
-  --glass: rgba(33, 26, 23, .82);
-  --scrim: rgba(0, 0, 0, .6);
-  --picker-filter: invert(1);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root[data-theme="system"] {
-    color-scheme: dark;
-    --bg: #16110F;
-    --surface: #211A17;
-    --raised: #2C2320;
-    --hover: #372C28;
-    --line: #3A2F2A;
-    --lineHi: #50413A;
-    --text: #F7F1EA;
-    --dim: #A3948A;
-    --accent: #FF7A70;
-    --accentText: #FF7A70;
-    --accentSoft: #3A1F1C;
-    --accentLine: #5A2E29;
-    --onAccent: #16110F;
-    --shortfall: #FF4A3D;
-    --fits: #4ED6A0;
-    --info: #7BA6F5;
-
-    --wash-accent: rgba(255, 122, 112, .06);
-    --wash-shortfall: rgba(255, 74, 61, .06);
-    --wash-fits: rgba(78, 214, 160, .06);
-
-    --shadow: inset 0 1px 0 rgba(255, 255, 255, .05), 0 4px 20px rgba(0, 0, 0, .4);
-    --shadow-lift: inset 0 1px 0 rgba(255, 255, 255, .07), 0 8px 28px rgba(0, 0, 0, .5);
-    --shadow-pop: 0 12px 34px rgba(0, 0, 0, .55);
-    --glass: rgba(33, 26, 23, .82);
-    --scrim: rgba(0, 0, 0, .6);
-    --picker-filter: invert(1);
-  }
 }
 
 html, body, #root {

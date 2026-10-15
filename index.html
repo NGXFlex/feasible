@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="system">
+<html lang="en" data-theme="system" data-palette="coral">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -7,11 +7,14 @@
     <meta name="theme-color" content="#F5F1EC" />
     <title>feasible</title>
     <script>
-      // Apply the saved theme before the first paint, so there is no flash.
+      // Apply the saved mode and palette before the first paint, so there is no flash.
       try {
         var saved = JSON.parse(localStorage.getItem("feasible-state-v1") || "null");
         if (saved && (saved.theme === "light" || saved.theme === "dark" || saved.theme === "system")) {
           document.documentElement.dataset.theme = saved.theme;
+        }
+        if (saved && /^(sand|cobalt|coral|lime|lavender)$/.test(saved.palette || "")) {
+          document.documentElement.dataset.palette = saved.palette;
         }
       } catch (e) {}
     </script>
