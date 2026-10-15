@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
-  C, FONT, Tap, inputStyle, useIsDesktop, sheetOverlay, sheetPanel, SheetHandle,
-  SIDEBAR_W, CONTENT_MAX, MOBILE_MAX,
+  C, FONT, EASE, Tap, inputStyle, useIsDesktop, useSplit, sheetOverlay, sheetPanel, SheetHandle,
+  SIDEBAR_W, CONTENT_MAX, MOBILE_MAX, SP, THEMES, useTheme, Mark, CardGrid, Split, SectionLabel,
+  card, hero, tinted, notice, choice,
 } from "./ui.jsx";
 import Login from "./Login.jsx";
 import { SYLLABI, getSyllabus, readinessFactor, dailyNeed, planForTarget, exerciseMinutes, MODEL } from "./engine/syllabusEngine.js";
@@ -17,6 +18,7 @@ const TYPE_META = {
   memory: { label: "Memory", base: 1.5, phases: [0.35, 0.15, 0.5] },
 };
 const PHASE_NAMES = ["Learn", "Practice", "Revise"];
+const PHASE_COLORS = [C.accent, C.info, C.lineHi];
 
 const PACE = [
   { id: "quick", label: "Quick", sub: "I get through a chapter fast", mult: 0.78 },
@@ -26,9 +28,9 @@ const PACE = [
 const paceMult = (id) => (PACE.find((p) => p.id === id) ?? PACE[1]).mult;
 
 const DIFF = [
-  { v: 1, label: "Easy", mult: 0.78, color: "#43D6A0" },
-  { v: 2, label: "Medium", mult: 1.0, color: "#7B8798" },
-  { v: 3, label: "Hard", mult: 1.4, color: "#FF6B6B" },
+  { v: 1, label: "Easy", mult: 0.78, color: C.info },
+  { v: 2, label: "Medium", mult: 1.0, color: C.dim },
+  { v: 3, label: "Hard", mult: 1.4, color: C.accentText },
 ];
 const diffMult = (v) => (DIFF.find((d) => d.v === v) ?? DIFF[1]).mult;
 const diffMeta = (v) => DIFF.find((d) => d.v === v) ?? DIFF[1];
@@ -331,7 +333,7 @@ function HoursSlider({ s, onCommit }) {
           <div style={{ fontSize: 14, fontWeight: 550 }}>Hours studied</div>
           <div style={{ fontSize: 12, color: C.dim, marginTop: 2 }}>Comes off what you still need</div>
         </div>
-        <div style={{ fontSize: 22, fontWeight: 700, color: dirty ? C.amber : C.text, fontVariantNumeric: "tabular-nums", letterSpacing: -0.6 }}>
+        <div style={{ fontSize: 22, fontWeight: 700, color: dirty ? C.accentText : C.text, fontVariantNumeric: "tabular-nums", letterSpacing: -0.6 }}>
           {v}h
         </div>
       </div>
@@ -341,11 +343,11 @@ function HoursSlider({ s, onCommit }) {
         <span>{max}h</span>
       </div>
       {dirty && (
-        <div style={{ display: "flex", gap: 8, marginTop: 14, animation: "rise .3s cubic-bezier(.22,1,.36,1) both" }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 14, animation: "rise .3s cubic-bezier(.32,.72,0,1) both" }}>
           <Tap onClick={() => setV(s.logged)} style={{ flex: 1, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "11px 0", borderRadius: 12, fontSize: 14, fontWeight: 600 }}>
             Cancel
           </Tap>
-          <Tap onClick={() => onCommit(s.id, v)} style={{ flex: 2, background: C.amber, color: "#181203", padding: "11px 0", borderRadius: 12, fontSize: 14, fontWeight: 650 }}>
+          <Tap onClick={() => onCommit(s.id, v)} style={{ flex: 2, background: C.amber, color: C.onAccent, padding: "11px 0", borderRadius: 12, fontSize: 14, fontWeight: 650 }}>
             Confirm {v}h
           </Tap>
         </div>
@@ -365,7 +367,7 @@ function DaySheet({ day, value, isCustom, onClose, onConfirm, onReset }) {
         style={{ ...sheetPanel(desktop), padding: desktop ? "16px 28px 28px" : "10px 24px 32px" }}
       >
         <SheetHandle desktop={desktop} />
-        <div style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>
+        <div style={{ fontSize: 13, color: C.accentText, fontWeight: 600 }}>
           {fmtDay(day)} {fmtDate(day)}
         </div>
         <div style={{ fontSize: 46, fontWeight: 700, letterSpacing: -1.8, margin: "8px 0 4px", fontVariantNumeric: "tabular-nums" }}>
@@ -383,7 +385,7 @@ function DaySheet({ day, value, isCustom, onClose, onConfirm, onReset }) {
 
         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
           {[0, 2, 4, 6, 8].map((q) => (
-            <Tap key={q} onClick={() => setV(q)} style={{ flex: 1, background: v === q ? C.amber : C.cardHi, color: v === q ? "#181203" : C.dim, border: `1px solid ${v === q ? C.amber : C.line}`, borderRadius: 12, padding: "11px 0", fontSize: 14, fontWeight: 600 }}>
+            <Tap key={q} onClick={() => setV(q)} style={{ flex: 1, background: v === q ? C.amber : C.cardHi, color: v === q ? C.onAccent : C.dim, border: `1px solid ${v === q ? C.amber : C.line}`, borderRadius: 12, padding: "11px 0", fontSize: 14, fontWeight: 600 }}>
               {q}h
             </Tap>
           ))}
@@ -393,7 +395,7 @@ function DaySheet({ day, value, isCustom, onClose, onConfirm, onReset }) {
           <Tap onClick={onClose} style={{ flex: 1, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "16px 0", borderRadius: 16, fontSize: 15, fontWeight: 600 }}>
             Cancel
           </Tap>
-          <Tap onClick={() => onConfirm(v)} style={{ flex: 2, background: C.amber, color: "#181203", padding: "16px 0", borderRadius: 16, fontSize: 16, fontWeight: 650 }}>
+          <Tap onClick={() => onConfirm(v)} style={{ flex: 2, background: C.amber, color: C.onAccent, padding: "16px 0", borderRadius: 16, fontSize: 16, fontWeight: 650 }}>
             Confirm
           </Tap>
         </div>
@@ -417,6 +419,7 @@ export default function App() {
   const [we, setWe] = useState(5);
   const [ov, setOv] = useState({});
   const [pace, setPace] = useState("steady");
+  const [theme, setTheme] = useState("system");   // "light" | "dark" | "system"
   const [subjects, setSubjects] = useState([]);
   const [openId, setOpenId] = useState(null);
   const [sheet, setSheet] = useState(null); // null | {mode:'add'} | {mode:'edit', subject}
@@ -436,6 +439,7 @@ export default function App() {
     setWe(typeof s?.we === "number" ? s.we : 5);
     setOv(s?.ov ?? {});
     setPace(s?.pace ?? "steady");
+    setTheme(THEMES.some((t) => t.id === s?.theme) ? s.theme : "system");
     setSubjects(Array.isArray(s?.subjects) ? s.subjects : []);
     setOnboarded(!!s?.onboarded);
   };
@@ -487,8 +491,10 @@ export default function App() {
   /* autosave */
   useEffect(() => {
     if (!ready || paused) return;
-    saveState({ wd, we, ov, pace, subjects, onboarded }, setSync);
-  }, [ready, paused, wd, we, ov, pace, subjects, onboarded]);
+    saveState({ wd, we, ov, pace, theme, subjects, onboarded }, setSync);
+  }, [ready, paused, wd, we, ov, pace, theme, subjects, onboarded]);
+
+  useTheme(theme);
 
   const go = (s, d = "fwd") => { setDir(d); setScreen(s); };
 
@@ -737,20 +743,20 @@ export default function App() {
     @keyframes rise { from { opacity:0; transform: translateY(14px) } to { opacity:1; transform:none } }
     @keyframes barUp { from { opacity:0; transform: translateY(70px) } to { opacity:1; transform:none } }
     @keyframes barUpCentered { from { opacity:0; transform: translate(-50%, 70px) } to { opacity:1; transform: translate(-50%, 0) } }
-    .rise { animation: rise .5s cubic-bezier(.22,1,.36,1) both }
-    .focus-ring:focus-visible { outline: 2px solid ${C.amber}; outline-offset: 3px }
+    .rise { animation: rise .5s cubic-bezier(.32,.72,0,1) both }
+    .focus-ring:focus-visible { outline: 2px solid ${C.accent}; outline-offset: 3px }
     ::-webkit-scrollbar { width:0; height:0 }
     .appmin { min-height: 100vh; min-height: 100dvh }
     .sheetbox { max-height: 88vh; max-height: 85dvh }
     @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-      .glass { background: #12171E !important }
+      .glass { background: var(--surface) !important }
     }
     input[type=range]{ -webkit-appearance:none; appearance:none; background:transparent; width:100%; margin:0 }
-    input[type=range]::-webkit-slider-runnable-track{ height:6px; border-radius:99px; background:#0E141B; border:1px solid ${C.line} }
-    input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:26px; height:26px; border-radius:99px; background:${C.amber}; margin-top:-11px; box-shadow:0 3px 10px rgba(0,0,0,.55); cursor:pointer }
-    input[type=range]::-moz-range-track{ height:6px; border-radius:99px; background:#0E141B; border:1px solid ${C.line} }
+    input[type=range]::-webkit-slider-runnable-track{ height:6px; border-radius:99px; background:var(--raised); border:1px solid ${C.line} }
+    input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:26px; height:26px; border-radius:99px; background:${C.amber}; margin-top:-11px; box-shadow:0 2px 8px rgba(31,26,22,.28); cursor:pointer }
+    input[type=range]::-moz-range-track{ height:6px; border-radius:99px; background:var(--raised); border:1px solid ${C.line} }
     input[type=range]::-moz-range-thumb{ width:26px; height:26px; border:none; border-radius:99px; background:${C.amber}; cursor:pointer }
-    input[type=date]::-webkit-calendar-picker-indicator { filter: invert(1); opacity:.5 }
+    input[type=date]::-webkit-calendar-picker-indicator { filter: var(--picker-filter); opacity:.5 }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { animation: none !important; transition: none !important }
     }
@@ -776,7 +782,7 @@ export default function App() {
       {withNav && <Sidebar screen={screen} go={go} onAdd={() => setSheet({ mode: "add" })} />}
 
       <div style={desktop ? { marginLeft: withNav ? SIDEBAR_W : 0, overflowX: "hidden" } : undefined}>
-      <div style={desktop ? { maxWidth: withNav ? CONTENT_MAX : MOBILE_MAX, margin: "0 auto", padding: withNav ? "0 24px" : 0 } : undefined}>
+      <div style={desktop ? { maxWidth: withNav ? CONTENT_MAX : MOBILE_MAX, margin: "0 auto", padding: withNav ? "0 16px" : 0 } : undefined}>
       {!ready && <div className="appmin" />}
       {ready && (
       <div
@@ -817,6 +823,7 @@ export default function App() {
         {screen === "time" && (
           <TimeScreen
             wd={wd} we={we} ov={ov} pace={pace} lastExam={lastExam}
+            theme={theme} onTheme={setTheme}
             account={cloudApi ? account : undefined}
             onSignIn={() => openLogin("time")}
             onSignOut={signOutNow}
@@ -874,7 +881,7 @@ export default function App() {
             background: C.cardHi, border: `1px solid ${C.line}`, padding: "12px 20px",
             borderRadius: 999, fontSize: 14, fontWeight: 500,
             animation: "toastIn .35s cubic-bezier(.32,.72,0,1) both",
-            zIndex: 90, boxShadow: "0 12px 32px rgba(0,0,0,.5)",
+            zIndex: 90, boxShadow: "var(--shadow-pop)",
           }}
         >
           {toast}
@@ -891,7 +898,7 @@ function SaveBar({ onSave, onCancel, label = "Save changes", bottom = 0 }) {
     <div
       style={{
         position: "fixed", transform: "translateX(-50%)",
-        background: "rgba(11,14,19,.9)", backdropFilter: "blur(20px)",
+        background: C.glass, backdropFilter: "blur(20px)",
         WebkitBackdropFilter: "blur(20px)",
         ...(desktop
           ? {
@@ -899,7 +906,7 @@ function SaveBar({ onSave, onCancel, label = "Save changes", bottom = 0 }) {
               bottom: bottom + 24, left: `calc(50% + ${SIDEBAR_W / 2}px)`,
               width: `min(${CONTENT_MAX - 48}px, calc(100vw - ${SIDEBAR_W + 48}px))`,
               padding: 12, border: `1px solid ${C.line}`, borderRadius: 20,
-              boxShadow: "0 12px 34px rgba(0,0,0,.55)",
+              boxShadow: "var(--shadow-pop)",
             }
           : {
               bottom, left: "50%", width: "100%", maxWidth: MOBILE_MAX,
@@ -921,7 +928,7 @@ function SaveBar({ onSave, onCancel, label = "Save changes", bottom = 0 }) {
       <Tap
         onClick={onSave}
         style={{
-          flex: 2, background: C.amber, color: "#181203", padding: "15px 0",
+          flex: 2, background: C.amber, color: C.onAccent, padding: "15px 0",
           borderRadius: 14, fontSize: 16, fontWeight: 650,
         }}
       >
@@ -934,11 +941,11 @@ function SaveBar({ onSave, onCancel, label = "Save changes", bottom = 0 }) {
 /* ------------------ inline confirm controls ------------------ */
 function ConfirmRow({ onCancel, onConfirm }) {
   return (
-    <div style={{ display: "flex", gap: 8, marginTop: 12, animation: "rise .28s cubic-bezier(.22,1,.36,1) both" }}>
+    <div style={{ display: "flex", gap: 8, marginTop: 12, animation: "rise .28s cubic-bezier(.32,.72,0,1) both" }}>
       <Tap onClick={onCancel} style={{ flex: 1, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "11px 0", borderRadius: 12, fontSize: 14, fontWeight: 600 }}>
         Cancel
       </Tap>
-      <Tap onClick={onConfirm} style={{ flex: 2, background: C.amber, color: "#181203", padding: "11px 0", borderRadius: 12, fontSize: 14, fontWeight: 650 }}>
+      <Tap onClick={onConfirm} style={{ flex: 2, background: C.amber, color: C.onAccent, padding: "11px 0", borderRadius: 12, fontSize: 14, fontWeight: 650 }}>
         Confirm
       </Tap>
     </div>
@@ -950,15 +957,15 @@ function ConfirmStepper({ label, sub, value, onCommit, delay }) {
   useEffect(() => { setV(value); }, [value]);
   const dirty = v !== value;
   return (
-    <div className="rise" style={{ background: C.card, border: `1px solid ${dirty ? C.amber : C.line}`, borderRadius: 20, padding: 20, marginBottom: 14, animationDelay: delay, transition: "border-color .3s ease" }}>
+    <div className="rise card" style={{ background: C.card, border: `1px solid ${dirty ? C.amber : C.line}`, borderRadius: 18, padding: 20, marginBottom: 16, animationDelay: delay, transition: "border-color .3s cubic-bezier(.32,.72,0,1)" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ paddingRight: 12 }}>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>{label}</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{label}</div>
           <div style={{ fontSize: 13, color: C.dim, marginTop: 3 }}>{sub}</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <Tap onClick={() => setV(Math.max(0, +(v - 0.5).toFixed(1)))} style={roundBtn}>−</Tap>
-          <div style={{ fontSize: 23, fontWeight: 700, width: 44, textAlign: "center", fontVariantNumeric: "tabular-nums", letterSpacing: -0.5, color: dirty ? C.amber : C.text }}>{v}</div>
+          <div style={{ fontSize: 23, fontWeight: 700, width: 44, textAlign: "center", fontVariantNumeric: "tabular-nums", letterSpacing: -0.5, color: dirty ? C.accentText : C.text }}>{v}</div>
           <Tap onClick={() => setV(Math.min(16, +(v + 0.5).toFixed(1)))} style={roundBtn}>+</Tap>
         </div>
       </div>
@@ -972,8 +979,8 @@ function PaceCard({ value, onCommit }) {
   useEffect(() => { setV(value); }, [value]);
   const dirty = v !== value;
   return (
-    <div className="rise" style={{ background: C.card, border: `1px solid ${dirty ? C.amber : C.line}`, borderRadius: 20, padding: 20, marginBottom: 14, animationDelay: ".1s", transition: "border-color .3s ease" }}>
-      <div style={{ fontSize: 16, fontWeight: 600 }}>Default pace</div>
+    <div className="rise card" style={{ background: C.card, border: `1px solid ${dirty ? C.amber : C.line}`, borderRadius: 18, padding: 20, marginBottom: 16, animationDelay: ".1s", transition: "border-color .3s cubic-bezier(.32,.72,0,1)" }}>
+      <div style={{ fontSize: 15, fontWeight: 600 }}>Default pace</div>
       <div style={{ fontSize: 13, color: C.dim, marginTop: 3, lineHeight: 1.5 }}>
         Pre-fills new subjects. Each subject keeps its own pace, set when you add it.
       </div>
@@ -984,7 +991,7 @@ function PaceCard({ value, onCommit }) {
             onClick={() => setV(p.id)}
             style={{
               flex: 1, background: v === p.id ? C.amber : C.cardHi,
-              color: v === p.id ? "#181203" : C.dim,
+              color: v === p.id ? C.onAccent : C.dim,
               border: `1px solid ${v === p.id ? C.amber : C.line}`,
               borderRadius: 12, padding: "12px 4px", fontSize: 13.5, fontWeight: 650,
             }}
@@ -1005,7 +1012,10 @@ function PaceCard({ value, onCommit }) {
 function Onboard({ wd, we, setWd, setWe, onDone, onSignIn }) {
   return (
     <div style={{ padding: "72px 24px 0" }}>
-      <div className="rise" style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>Feasible</div>
+      <div className="rise" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <Mark size={32} />
+        <span style={{ fontSize: 13, color: C.accentText, fontWeight: 600 }}>Feasible</span>
+      </div>
       <h1 className="rise" style={{ fontSize: 36, lineHeight: 1.12, fontWeight: 700, letterSpacing: -1.1, margin: "14px 0 12px", animationDelay: ".05s" }}>
         Let's see if your<br />plan is possible.
       </h1>
@@ -1016,7 +1026,7 @@ function Onboard({ wd, we, setWd, setWe, onDone, onSignIn }) {
         <Stepper label="On a school day" sub="Hours you can really study" value={wd} set={setWd} delay=".18s" />
         <Stepper label="On a weekend day" sub="Be honest, not aspirational" value={we} set={setWe} delay=".24s" />
       </div>
-      <Tap onClick={onDone} style={{ marginTop: 36, width: "100%", background: C.amber, color: "#181203", padding: "17px 0", borderRadius: 16, fontSize: 17, fontWeight: 650 }}>
+      <Tap onClick={onDone} style={{ marginTop: 36, width: "100%", background: C.amber, color: C.onAccent, padding: "17px 0", borderRadius: 16, fontSize: 17, fontWeight: 650 }}>
         Save and continue
       </Tap>
       <div style={{ fontSize: 13, color: C.dim, textAlign: "center", marginTop: 14 }}>
@@ -1025,7 +1035,7 @@ function Onboard({ wd, we, setWd, setWe, onDone, onSignIn }) {
       {onSignIn && (
         <div className="rise" style={{ fontSize: 14, color: C.dim, textAlign: "center", marginTop: 22, animationDelay: ".3s" }}>
           Already have an account?{" "}
-          <Tap className="focus-ring" onClick={onSignIn} style={{ background: "none", color: C.amber, fontSize: 14, fontWeight: 600, padding: "4px 2px", borderRadius: 6 }}>
+          <Tap className="focus-ring" onClick={onSignIn} style={{ background: "none", color: C.accentText, fontSize: 14, fontWeight: 600, padding: "4px 2px", borderRadius: 6 }}>
             Sign in
           </Tap>
         </div>
@@ -1036,9 +1046,9 @@ function Onboard({ wd, we, setWd, setWe, onDone, onSignIn }) {
 
 function Stepper({ label, sub, value, set, delay }) {
   return (
-    <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between", animationDelay: delay }}>
+    <div className="rise card" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 18, padding: 20, marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", animationDelay: delay }}>
       <div style={{ paddingRight: 12 }}>
-        <div style={{ fontSize: 16, fontWeight: 600 }}>{label}</div>
+        <div style={{ fontSize: 15, fontWeight: 600 }}>{label}</div>
         <div style={{ fontSize: 13, color: C.dim, marginTop: 3 }}>{sub}</div>
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1051,7 +1061,7 @@ function Stepper({ label, sub, value, set, delay }) {
 }
 
 /* ----------------------------- TIME ------------------------------ */
-function TimeScreen({ wd, we, ov, pace, lastExam, account, onSignIn, onSignOut, onSaveWd, onSaveWe, onSavePace, onSetDay, onResetDay, onReset, setOverlay }) {
+function TimeScreen({ wd, we, ov, pace, theme, onTheme, lastExam, account, onSignIn, onSignOut, onSaveWd, onSaveWe, onSavePace, onSetDay, onResetDay, onReset, setOverlay }) {
   const [pick, setPick] = useState(null);
   const [reset, setReset] = useState(false);
   const [outArm, setOutArm] = useState(false);
@@ -1062,26 +1072,34 @@ function TimeScreen({ wd, we, ov, pace, lastExam, account, onSignIn, onSignOut, 
 
   const totalHours = hoursBetween(new Date(), lastExam, wd, we, ov);
   const customCount = Object.keys(ov).length;
+  const split = useSplit();
 
-  return (
-    <div style={{ padding: "60px 24px 0" }}>
-      <Header title="Time" sub="What you actually have, not what you wish you had" />
-
-      <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 16 }}>
-        <div style={{ fontSize: 40, fontWeight: 700, letterSpacing: -1.6, color: C.amber, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>
+  /* the pieces of the screen; side by side on a wide screen */
+  const totalCard = (
+    <>
+      <div className="rise card" style={{ ...hero("accent"), marginBottom: SP.group }}>
+        <div style={{ fontSize: 64, fontWeight: 700, letterSpacing: -3, color: C.accent, lineHeight: 1 }}>
           {Math.round(totalHours)}h
         </div>
-        <div style={{ fontSize: 14, color: C.dim, marginTop: 10, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 14, color: C.dim, marginTop: 14, lineHeight: 1.5 }}>
           total study time between now and your last exam. Every change below moves this
           number and the Check tab straight away.
         </div>
       </div>
+    </>
+  );
 
+  const defaults = (
+    <>
       <ConfirmStepper label="On a school day" sub="Default for Mon–Fri" value={wd} onCommit={onSaveWd} delay="0s" />
       <ConfirmStepper label="On a weekend day" sub="Default for Sat–Sun" value={we} onCommit={onSaveWe} delay=".05s" />
       <PaceCard value={pace} onCommit={onSavePace} />
+    </>
+  );
 
-      <div style={{ marginTop: 28, marginBottom: 14 }}>
+  const specificDays = (
+    <>
+      <div style={{ marginTop: split ? SP.section - SP.group : SP.section, marginBottom: 14 }}>
         <div style={{ fontSize: 18, fontWeight: 650, letterSpacing: -0.3 }}>Specific days</div>
         <div style={{ fontSize: 13, color: C.dim, marginTop: 5, lineHeight: 1.5 }}>
           Tap any day to change just that one. Function on Saturday? Set it to zero.
@@ -1089,7 +1107,7 @@ function TimeScreen({ wd, we, ov, pace, lastExam, account, onSignIn, onSignOut, 
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${split ? 7 : 4}, minmax(0, 1fr))`, gap: 8 }}>
         {days.map((d, i) => {
           const k = key(d);
           const custom = k in ov;
@@ -1098,19 +1116,20 @@ function TimeScreen({ wd, we, ov, pace, lastExam, account, onSignIn, onSignOut, 
           return (
             <Tap
               key={k}
+              className="card"
               onClick={() => setPick({ day: d, val, custom })}
               style={{
-                background: C.card,
+                background: C.surface,
                 border: `1px solid ${C.line}`,
                 borderRadius: 14, padding: "12px 4px", color: C.text,
                 position: "relative",
-                animation: `rise .45s cubic-bezier(.22,1,.36,1) ${Math.min(0.4, 0.015 * i)}s both`,
+                animation: `rise .45s cubic-bezier(.32,.72,0,1) ${Math.min(0.4, 0.015 * i)}s both`,
               }}
             >
               {custom && (
                 <div style={{ position: "absolute", top: 8, right: 8, width: 5, height: 5, borderRadius: 99, background: C.amber }} />
               )}
-              <div style={{ fontSize: 11, color: weekend ? C.blue : C.dim, fontWeight: 600 }}>
+              <div style={{ fontSize: 11, color: weekend ? C.info : C.dim, fontWeight: 600 }}>
                 {i === 0 ? "TODAY" : fmtDay(d).toUpperCase()}
               </div>
               <div style={{ fontSize: 13, color: C.dim, marginTop: 3 }}>
@@ -1123,10 +1142,15 @@ function TimeScreen({ wd, we, ov, pace, lastExam, account, onSignIn, onSignOut, 
           );
         })}
       </div>
+    </>
+  );
 
+  const settings = (
+    <>
+      <ThemeCard value={theme} onChange={onTheme} />
       {account !== undefined && (
-        <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginTop: 28 }}>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>Account</div>
+        <div className="rise card" style={{ ...card, marginBottom: SP.group }}>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>Account</div>
           <div style={{ fontSize: 13, color: C.dim, marginTop: 3, lineHeight: 1.5, overflowWrap: "anywhere" }}>
             {signedIn
               ? <>Signed in as <span style={{ color: C.text }}>{account.email}</span>. Your plan syncs to every device you sign in on.</>
@@ -1139,9 +1163,9 @@ function TimeScreen({ wd, we, ov, pace, lastExam, account, onSignIn, onSignOut, 
               onPointerLeave={() => setOutArm(false)}
               style={{
                 marginTop: 14, width: "100%",
-                background: outArm ? C.amber : C.cardHi, color: outArm ? "#181203" : C.text,
+                background: outArm ? C.amber : C.cardHi, color: outArm ? C.onAccent : C.text,
                 border: `1px solid ${outArm ? C.amber : C.line}`, padding: "13px 0", borderRadius: 14,
-                fontSize: 14.5, fontWeight: 600, transition: "background .25s ease, color .25s ease",
+                fontSize: 14.5, fontWeight: 600, transition: "background .25s cubic-bezier(.32,.72,0,1), color .25s cubic-bezier(.32,.72,0,1)",
               }}
             >
               {outArm ? "Tap again to sign out" : "Sign out"}
@@ -1158,15 +1182,15 @@ function TimeScreen({ wd, we, ov, pace, lastExam, account, onSignIn, onSignOut, 
         </div>
       )}
 
-      <div style={{ marginTop: 30, paddingTop: 20, borderTop: `1px solid ${C.line}` }}>
+      <div style={{ marginTop: SP.section - SP.group, paddingTop: 20, borderTop: `1px solid ${C.line}` }}>
         <Tap
           onClick={() => (reset ? onReset() : setReset(true))}
           onPointerLeave={() => setReset(false)}
           style={{
-            width: "100%", background: reset ? C.red : "transparent",
-            border: `1px solid ${reset ? C.red : C.line}`,
-            color: reset ? "#1A0A0A" : C.dim, padding: "14px 0", borderRadius: 16,
-            fontSize: 14.5, fontWeight: 600, transition: "background .25s ease, color .25s ease",
+            width: "100%", background: reset ? C.accent : "transparent",
+            border: `1px solid ${reset ? C.accent : C.line}`,
+            color: reset ? C.onAccent : C.dim, padding: "14px 0", borderRadius: 16,
+            fontSize: 14.5, fontWeight: 600, transition: "background .25s cubic-bezier(.32,.72,0,1), color .25s cubic-bezier(.32,.72,0,1)",
           }}
         >
           {reset ? "Tap again to erase everything" : "Start over"}
@@ -1175,6 +1199,27 @@ function TimeScreen({ wd, we, ov, pace, lastExam, account, onSignIn, onSignOut, 
           Clears every subject and returns to the welcome screen.
         </div>
       </div>
+    </>
+  );
+
+  return (
+    <div style={{ padding: "60px 24px 0" }}>
+      <Header title="Time" sub="What you actually have, not what you wish you had" />
+
+      {split ? (
+        <Split
+          main={<>{totalCard}{specificDays}</>}
+          side={<><SectionLabel>Defaults</SectionLabel>{defaults}{settings}</>}
+        />
+      ) : (
+        <>
+          {totalCard}
+          {defaults}
+          {specificDays}
+          <div style={{ height: SP.section }} />
+          {settings}
+        </>
+      )}
 
       <div style={{ height: 10 }} />
 
@@ -1192,10 +1237,41 @@ function TimeScreen({ wd, we, ov, pace, lastExam, account, onSignIn, onSignOut, 
   );
 }
 
+/* Light, Dark or follow the device. Saved with the rest of the plan. */
+function ThemeCard({ value, onChange }) {
+  return (
+    <div className="rise card" style={{ ...card, marginBottom: SP.group }}>
+      <div style={{ fontSize: 15, fontWeight: 600 }}>Appearance</div>
+      <div role="radiogroup" aria-label="Appearance" style={{ display: "flex", gap: 4, marginTop: 14, padding: 4, background: C.raised, borderRadius: 12 }}>
+        {THEMES.map((t) => {
+          const on = value === t.id;
+          return (
+            <Tap
+              key={t.id}
+              role="radio"
+              aria-checked={on}
+              className="focus-ring"
+              onClick={() => onChange(t.id)}
+              style={{
+                flex: 1, padding: "9px 0", borderRadius: 9, fontSize: 13.5, fontWeight: 600,
+                background: on ? C.surface : "transparent", color: on ? C.text : C.dim,
+                boxShadow: on ? "var(--shadow)" : "none",
+                transition: `background .2s ${EASE}, color .2s ${EASE}`,
+              }}
+            >
+              {t.label}
+            </Tap>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* --------------------------- SUBJECTS --------------------------- */
 function SyncChip({ sync }) {
   const map = {
-    cloud:   { dot: C.green, text: "Synced to cloud" },
+    cloud:   { dot: C.info, text: "Synced to cloud" },
     saving:  { dot: C.amber, text: "Saving\u2026" },
     offline: { dot: C.amber, text: "Offline \u2014 will sync later" },
     local:   { dot: C.dim,   text: "Saved on this device" },
@@ -1210,7 +1286,7 @@ function SyncChip({ sync }) {
         borderRadius: 99, padding: "6px 12px", marginBottom: 18,
       }}
     >
-      <div style={{ width: 6, height: 6, borderRadius: 99, background: m.dot, transition: "background .3s ease" }} />
+      <div style={{ width: 6, height: 6, borderRadius: 99, background: m.dot, transition: "background .3s cubic-bezier(.32,.72,0,1)" }} />
       <span style={{ fontSize: 12, color: C.dim, fontWeight: 550 }}>{m.text}</span>
     </div>
   );
@@ -1223,7 +1299,7 @@ function Subjects({ data, onOpen, onAdd, onSample, sync }) {
       <Header title="Subjects" sub={`${data.length} exam${data.length === 1 ? "" : "s"} ahead`} />
       <SyncChip sync={sync} />
       {data.length === 0 && (
-        <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 22, padding: 26, marginBottom: 14 }}>
+        <div className="rise card" style={hero("accent")}>
           <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5 }}>Get started</div>
           <div style={{ color: C.dim, fontSize: 14.5, lineHeight: 1.6, marginTop: 10 }}>
             Add your first exam and the app works out whether you actually have the hours for it.
@@ -1231,7 +1307,7 @@ function Subjects({ data, onOpen, onAdd, onSample, sync }) {
           </div>
           <Tap
             onClick={onAdd}
-            style={{ width: "100%", marginTop: 20, background: C.amber, color: "#181203", padding: "16px 0", borderRadius: 14, fontSize: 16, fontWeight: 650 }}
+            style={{ width: "100%", marginTop: 20, background: C.accent, color: C.onAccent, padding: "16px 0", borderRadius: 14, fontSize: 16, fontWeight: 650 }}
           >
             Add your first subject
           </Tap>
@@ -1243,45 +1319,47 @@ function Subjects({ data, onOpen, onAdd, onSample, sync }) {
           </Tap>
         </div>
       )}
-      <div style={desktop ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 } : undefined}>
-      {data.map((s, i) => (
-        <Tap
-          key={s.id}
-          onClick={() => onOpen(s.id)}
-          style={{
-            display: "block", width: "100%", textAlign: "left", background: C.card,
-            border: `1px solid ${C.line}`, borderRadius: 20, padding: 0, marginBottom: desktop ? 0 : 12,
-            overflow: "hidden", color: C.text,
-            animation: `rise .5s cubic-bezier(.22,1,.36,1) ${0.05 * i}s both`,
-          }}
-        >
-          <div style={{ display: "flex" }}>
-            <div style={{ width: 4, background: s.gap < -0.5 ? C.red : C.green, flexShrink: 0 }} />
-            <div style={{ padding: "18px 20px", flex: 1 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                <div style={{ fontSize: 18, fontWeight: 650, letterSpacing: -0.3 }}>{s.name}</div>
-                <div style={{ fontSize: 13, color: C.dim, fontVariantNumeric: "tabular-nums" }}>{fmtDate(s.date)}</div>
-              </div>
-              <div style={{ marginTop: 8, fontSize: 14, color: s.gap < -0.5 ? C.red : C.green, fontWeight: 500 }}>
-                {s.gap < -0.5 ? `${Math.round(-s.gap)}h short` : `${Math.round(s.gap)}h spare`}
-                <span style={{ color: C.dim, fontWeight: 400 }}>
-                  {"  ·  "}{s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · {s.doneCount}/{s.chapters} chapters
-                </span>
-              </div>
-              {s.perDay != null && s.needed > 0 && (
-                <div style={{ marginTop: 6, fontSize: 13, color: C.dim, fontVariantNumeric: "tabular-nums" }}>
-                  Needs <span style={{ color: s.perDay > s.havePerDay ? C.red : C.text, fontWeight: 600 }}>{s.perDay.toFixed(1)}h a day</span>
-                  {s.syl && <> · ~{fmtMarks(s.marksLeft)} marks left</>}
+      {data.length > 0 && <SectionLabel>Exams</SectionLabel>}
+      <CardGrid>
+        {data.map((s, i) => (
+          <Tap
+            key={s.id}
+            className="card"
+            onClick={() => onOpen(s.id)}
+            style={{
+              display: "block", width: "100%", textAlign: "left", background: C.surface,
+              border: `1px solid ${C.line}`, borderRadius: 18, padding: 0,
+              overflow: "hidden", color: C.text,
+              animation: `rise .5s ${EASE} ${0.05 * i}s both`,
+            }}
+          >
+            <div style={{ display: "flex", height: "100%" }}>
+              <div style={{ width: 4, background: s.gap < -0.5 ? C.shortfall : C.fits, flexShrink: 0 }} />
+              <div style={{ padding: SP.card, flex: 1 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{s.name}</div>
+                  <div style={{ fontSize: 13, color: C.dim }}>{fmtDate(s.date)}</div>
                 </div>
-              )}
+                <div style={{ marginTop: 8, fontSize: 14, color: s.gap < -0.5 ? C.shortfall : C.fits, fontWeight: 600 }}>
+                  {s.gap < -0.5 ? `${Math.round(-s.gap)}h short` : `${Math.round(s.gap)}h spare`}
+                  <span style={{ color: C.dim, fontWeight: 400 }}>
+                    {"  ·  "}{s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · {s.doneCount}/{s.chapters} chapters
+                  </span>
+                </div>
+                {s.perDay != null && s.needed > 0 && (
+                  <div style={{ marginTop: 6, fontSize: 13, color: C.dim }}>
+                    Needs <span style={{ color: s.perDay > s.havePerDay ? C.shortfall : C.text, fontWeight: 600 }}>{s.perDay.toFixed(1)}h a day</span>
+                    {s.syl && <> · ~{fmtMarks(s.marksLeft)} marks left</>}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        </Tap>
-      ))}
-      </div>
+          </Tap>
+        ))}
+      </CardGrid>
       {data.length > 0 && (
         <>
-          <Tap onClick={onAdd} style={{ width: "100%", marginTop: 8, background: "transparent", border: `1px dashed ${C.line}`, color: C.dim, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 500 }}>
+          <Tap onClick={onAdd} style={{ width: "100%", marginTop: SP.group, background: "transparent", border: `1px dashed ${C.lineHi}`, color: C.dim, padding: "16px 0", borderRadius: 18, fontSize: 15, fontWeight: 500 }}>
             Add a subject
           </Tap>
           <div style={{ fontSize: 13, color: C.dim, textAlign: "center", marginTop: 12 }}>
@@ -1301,58 +1379,59 @@ function Reality({ data, worst, totalShort, totalSpare, onSetLog }) {
   const [go, setGo] = useState(false);
   useEffect(() => { const t = setTimeout(() => setGo(true), 120); return () => clearTimeout(t); }, []);
   const flagged = data.filter((s) => s.overconfident);
-  const desktop = useIsDesktop();
 
   return (
     <div style={{ padding: "60px 24px 0" }}>
       <Header title="Reality check" sub="Where the numbers actually land" />
 
-      <div className="rise" style={{ background: short > 0 ? "#1D1215" : "#101C18", border: `1px solid ${short > 0 ? "#3A1F24" : "#17342B"}`, borderRadius: 24, padding: 24, marginBottom: 20 }}>
-        <div style={{ fontSize: 56, fontWeight: 700, letterSpacing: -2.4, lineHeight: 1, color: short > 0 ? C.red : C.green, fontVariantNumeric: "tabular-nums" }}>
+      <div className="rise card" style={{ ...hero(short > 0 ? "shortfall" : "fits"), marginBottom: SP.section }}>
+        <div style={{ fontSize: 64, fontWeight: 700, letterSpacing: -3, lineHeight: 1, color: short > 0 ? C.shortfall : C.fits }}>
           {Math.round(n)}h
         </div>
-        <div style={{ fontSize: 17, marginTop: 12, lineHeight: 1.5, fontWeight: 500 }}>
-          {short > 0 ? (<>short overall. The tightest is <span style={{ color: C.red }}>{worst?.name}</span>.</>) : (<>spare in total.</>)}
+        <div style={{ fontSize: 17, marginTop: 14, lineHeight: 1.5, fontWeight: 500 }}>
+          {short > 0 ? (<>short overall. The tightest is <span style={{ color: C.shortfall }}>{worst?.name}</span>.</>) : (<>spare in total.</>)}
         </div>
         <div style={{ fontSize: 14, color: C.dim, marginTop: 10, lineHeight: 1.5 }}>
           {short > 0
             ? "Cut chapters, add hours, or accept the gap. Doing nothing is also a choice."
             : "Keep the pace and don't add anything new."}
         </div>
-        <div style={{ fontSize: 12.5, color: C.dim, marginTop: 12, lineHeight: 1.5, paddingTop: 12, borderTop: `1px solid rgba(255,255,255,.07)` }}>
+        <div style={{ fontSize: 12.5, color: C.dim, marginTop: 14, lineHeight: 1.5, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
           Every day's hours are shared between the subjects whose exams are still ahead,
           weighted by how urgent each one is. No hour is counted twice.
         </div>
       </div>
 
-      <div style={desktop ? { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12, alignItems: "start" } : undefined}>
-      {data.map((s, i) => {
-        const max = Math.max(s.needed, s.available) || 1;
-        const fits = s.gap >= 0;
-        return (
-          <div key={s.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: desktop ? 0 : 12, animation: `rise .5s cubic-bezier(.22,1,.36,1) ${0.08 * i + 0.1}s both` }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
-              <div>
-                <div style={{ fontSize: 17, fontWeight: 650, letterSpacing: -0.3 }}>{s.name}</div>
-                <div style={{ fontSize: 12.5, color: C.dim, marginTop: 4 }}>
-                  {key(s.windowStart) === key(new Date()) ? "Today" : fmtDate(s.windowStart)} – {fmtDate(s.date)} · {s.windowDays} study day{s.windowDays === 1 ? "" : "s"}
+      <SectionLabel>By subject</SectionLabel>
+      <CardGrid align="start">
+        {data.map((s, i) => {
+          const max = Math.max(s.needed, s.available) || 1;
+          const fits = s.gap >= 0;
+          return (
+            <div className="card" key={s.id} style={{ ...card, animation: `rise .5s ${EASE} ${0.08 * i + 0.1}s both` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{s.name}</div>
+                  <div style={{ fontSize: 12.5, color: C.dim, marginTop: 4 }}>
+                    {key(s.windowStart) === key(new Date()) ? "Today" : fmtDate(s.windowStart)} – {fmtDate(s.date)} · {s.windowDays} study day{s.windowDays === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: fits ? C.fits : C.shortfall }}>
+                  {fits ? "+" : "−"}{Math.abs(Math.round(s.gap))}h
                 </div>
               </div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: fits ? C.green : C.red, fontVariantNumeric: "tabular-nums" }}>
-                {fits ? "+" : "−"}{Math.abs(Math.round(s.gap))}h
-              </div>
+              <Bar label="You have" hours={s.available} pct={go ? (s.available / max) * 100 : 0} color={C.lineHi} delay={0.1 * i} />
+              <Bar label="Still need" hours={s.needed} pct={go ? (s.needed / max) * 100 : 0} color={fits ? C.fits : C.shortfall} delay={0.1 * i + 0.08} />
+              <HoursSlider s={s} onCommit={onSetLog} />
             </div>
-            <Bar label="You have" hours={s.available} pct={go ? (s.available / max) * 100 : 0} color={C.dim} delay={0.1 * i} />
-            <Bar label="Still need" hours={s.needed} pct={go ? (s.needed / max) * 100 : 0} color={fits ? C.green : C.red} delay={0.1 * i + 0.08} />
-            <HoursSlider s={s} onCommit={onSetLog} />
-          </div>
-        );
-      })}
-      </div>
+          );
+        })}
+      </CardGrid>
 
+      {flagged.length > 0 && <div style={{ height: SP.group }} />}
       {flagged.map((s) => (
-        <div key={s.id} className="rise" style={{ background: "#1C1710", border: "1px solid #3A2E17", borderRadius: 18, padding: "16px 20px", marginBottom: 12, fontSize: 14, lineHeight: 1.55, color: "#E9D3A6", animationDelay: ".35s" }}>
-          You rated <b style={{ color: C.amber }}>{s.name}</b> easy, but your last score was {s.lastScore}%. Confidence and marks disagree — that gap is usually where results get lost.
+        <div key={s.id} className="rise" style={{ ...notice, marginBottom: SP.group, fontSize: 14, lineHeight: 1.55, animationDelay: ".35s" }}>
+          You rated <b style={{ color: C.accentText }}>{s.name}</b> easy, but your last score was {s.lastScore}%. Confidence and marks disagree — that gap is usually where results get lost.
         </div>
       ))}
     </div>
@@ -1366,8 +1445,8 @@ function Bar({ label, hours, pct, color, delay }) {
         <span>{label}</span>
         <span style={{ fontVariantNumeric: "tabular-nums", color: C.text }}>{Math.round(hours)}h</span>
       </div>
-      <div style={{ height: 8, background: "#0E141B", borderRadius: 99, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: `width 1s cubic-bezier(.22,1,.36,1) ${delay}s` }} />
+      <div style={{ height: 8, background: C.raised, borderRadius: 99, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: `width 1s cubic-bezier(.32,.72,0,1) ${delay}s` }} />
       </div>
     </div>
   );
@@ -1387,15 +1466,15 @@ function urgencyTag(s) {
   const u = urgencyOf(s);
   if (s.havePerDay == null) return s.needed > 0 ? { label: "At risk", color: C.red } : { label: "Comfortable", color: C.green };
   if (u > s.havePerDay) return { label: "At risk", color: C.red };
-  if (u > s.havePerDay * 0.6) return { label: "Tight", color: C.amber };
+  if (u > s.havePerDay * 0.6) return { label: "Tight", color: C.accentText };
   return { label: "Comfortable", color: C.green };
 }
 
 function SubjectOrder({ data }) {
   const ranked = [...data].sort((a, b) => urgencyOf(b) - urgencyOf(a) || new Date(a.date) - new Date(b.date));
   return (
-    <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: "18px 20px", marginBottom: 18 }}>
-      <div style={{ fontSize: 16, fontWeight: 600 }}>Do these in this order</div>
+    <div className="rise card" style={{ ...card, marginBottom: SP.group }}>
+      <div style={{ fontSize: 15, fontWeight: 600 }}>Do these in this order</div>
       <ol style={{ listStyle: "none", margin: "10px 0 0", padding: 0 }}>
         {ranked.map((s, k) => {
           const tag = urgencyTag(s);
@@ -1408,7 +1487,7 @@ function SubjectOrder({ data }) {
                   {s.perDay != null ? `${s.perDay.toFixed(1)}h a day` : "no study days left"} · exam {fmtDate(s.date)}
                 </span>
               </span>
-              <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 650, color: tag.color, background: "rgba(255,255,255,.04)", border: `1px solid ${C.line}`, borderRadius: 99, padding: "4px 10px" }}>
+              <span style={{ flexShrink: 0, fontSize: 12, fontWeight: 650, color: tag.color, background: C.raised, border: `1px solid ${C.line}`, borderRadius: 99, padding: "4px 10px" }}>
                 {tag.label}
               </span>
             </li>
@@ -1425,59 +1504,57 @@ function SubjectOrder({ data }) {
 function Plan({ data }) {
   const [open, setOpen] = useState(data[0]?.id ?? null);
   const behindList = data.filter((s) => s.behind > 0);
+  const split = useSplit();
 
-  return (
-    <div style={{ padding: "60px 24px 0" }}>
-      <Header title="Plan" sub="Phases sized to how each subject behaves" />
+  const paceCard = (
+    <div
+      className="rise"
+      style={{
+        ...(behindList.length ? notice : tinted("fits")),
+        marginBottom: SP.group, fontSize: 15, lineHeight: 1.55,
+      }}
+    >
+      {behindList.length ? (
+        <>
+          <b style={{ color: C.accentText }}>Behind pace.</b>{" "}
+          {behindList.map((s, i) => (
+            <span key={s.id}>
+              {i > 0 && ", "}
+              {s.name} by {s.behind} chapter{s.behind === 1 ? "" : "s"}
+            </span>
+          ))}
+          .
+          <div style={{ color: C.dim, fontSize: 13, marginTop: 8 }}>
+            Pace = chapters you'd have finished by today if you'd spread them evenly from
+            when you added the subject to exam day. Tick chapters and this updates itself.
+          </div>
+        </>
+      ) : (
+        <>
+          <b style={{ color: C.fits }}>On pace.</b> Every subject is where it should be for today.
+          <div style={{ color: C.dim, fontSize: 13, marginTop: 8 }}>
+            Measured against an even spread of chapters from the day you added each subject to exam day.
+          </div>
+        </>
+      )}
+    </div>
+  );
 
-      {data.length > 0 && <SubjectOrder data={data} />}
-
-      <div
-        className="rise"
-        style={{
-          background: behindList.length ? "#1C1710" : "#101C18",
-          border: `1px solid ${behindList.length ? "#3A2E17" : "#17342B"}`,
-          borderRadius: 20, padding: "18px 20px", marginBottom: 18,
-          fontSize: 15, lineHeight: 1.55,
-        }}
-      >
-        {behindList.length ? (
-          <>
-            <b style={{ color: C.amber }}>Behind pace.</b>{" "}
-            {behindList.map((s, i) => (
-              <span key={s.id}>
-                {i > 0 && ", "}
-                {s.name} by {s.behind} chapter{s.behind === 1 ? "" : "s"}
-              </span>
-            ))}
-            .
-            <div style={{ color: C.dim, fontSize: 13, marginTop: 8 }}>
-              Pace = chapters you'd have finished by today if you'd spread them evenly from
-              when you added the subject to exam day. Tick chapters and this updates itself.
-            </div>
-          </>
-        ) : (
-          <>
-            <b style={{ color: C.green }}>On pace.</b> Every subject is where it should be for today.
-            <div style={{ color: C.dim, fontSize: 13, marginTop: 8 }}>
-              Measured against an even spread of chapters from the day you added each subject to exam day.
-            </div>
-          </>
-        )}
-      </div>
-
+  const phases = (
+    <>
+      {data.length > 0 && <SectionLabel>Phases</SectionLabel>}
       {data.map((s, i) => {
         const isOpen = open === s.id;
         const days = s.windowDays;
         const segs = s.phases;
 
         return (
-          <div key={s.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, marginBottom: 12, overflow: "hidden", animation: `rise .5s cubic-bezier(.22,1,.36,1) ${0.06 * i}s both` }}>
-            <Tap onClick={() => setOpen(isOpen ? null : s.id)} style={{ width: "100%", background: "transparent", color: C.text, padding: "18px 20px", textAlign: "left" }}>
+          <div className="card" key={s.id} style={{ ...card, padding: 0, marginBottom: SP.group, overflow: "hidden", animation: `rise .5s cubic-bezier(.32,.72,0,1) ${0.06 * i}s both` }}>
+            <Tap onClick={() => setOpen(isOpen ? null : s.id)} style={{ width: "100%", background: "transparent", color: C.text, padding: SP.card, textAlign: "left" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
-                  <div style={{ fontSize: 17, fontWeight: 650, letterSpacing: -0.3 }}>{s.name}</div>
-                  <div style={{ fontSize: 13, color: s.behind > 0 ? C.amber : C.dim, marginTop: 4 }}>
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>{s.name}</div>
+                  <div style={{ fontSize: 13, color: s.behind > 0 ? C.accentText : C.dim, marginTop: 4 }}>
                     {s.behind > 0 ? `${s.behind} chapter${s.behind === 1 ? "" : "s"} behind pace` : "On pace"}
                     <span style={{ color: C.dim }}> · {fmtDate(s.windowStart)}–{fmtDate(s.date)} · {Math.round(s.available)}h</span>
                   </div>
@@ -1486,15 +1563,15 @@ function Plan({ data }) {
               </div>
               <div style={{ display: "flex", gap: 3, marginTop: 16 }}>
                 {segs.map((g, k) => (
-                  <div key={k} style={{ flex: g.pct, height: 6, borderRadius: 99, background: [C.amber, C.blue, C.green][k], opacity: 0.9 }} />
+                  <div key={k} style={{ flex: g.pct, height: 6, borderRadius: 99, background: PHASE_COLORS[k] }} />
                 ))}
               </div>
             </Tap>
-            <div style={{ maxHeight: isOpen ? 430 : 0, opacity: isOpen ? 1 : 0, transition: "max-height .42s cubic-bezier(.32,.72,0,1), opacity .3s ease", overflow: "hidden" }}>
+            <div style={{ maxHeight: isOpen ? 430 : 0, opacity: isOpen ? 1 : 0, transition: "max-height .42s cubic-bezier(.32,.72,0,1), opacity .3s cubic-bezier(.32,.72,0,1)", overflow: "hidden" }}>
               <div style={{ padding: "4px 20px 20px" }}>
                 {segs.map((g, k) => (
                   <div key={k} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderTop: `1px solid ${C.line}` }}>
-                    <div style={{ width: 8, height: 8, borderRadius: 99, background: [C.amber, C.blue, C.green][k] }} />
+                    <div style={{ width: 8, height: 8, borderRadius: 99, background: PHASE_COLORS[k] }} />
                     <div style={{ flex: 1, fontSize: 15, fontWeight: 550, color: g.days === 0 ? C.dim : C.text }}>{g.name}</div>
                     {g.days === 0 ? (
                       <div style={{ fontSize: 13, color: C.dim, fontStyle: "italic" }}>No room</div>
@@ -1507,7 +1584,7 @@ function Plan({ data }) {
                   </div>
                 ))}
                 {s.squeezed > 0 && (
-                  <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 12, marginTop: 4, marginBottom: 4, fontSize: 13, color: C.amber, lineHeight: 1.5 }}>
+                  <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 12, marginTop: 4, marginBottom: 4, fontSize: 13, color: C.accentText, lineHeight: 1.5 }}>
                     Only {s.windowDays} study day{s.windowDays === 1 ? "" : "s"} before this exam, so there
                     isn't room for every phase. The time goes to the phases closest to the exam.
                   </div>
@@ -1517,7 +1594,7 @@ function Plan({ data }) {
                     <div style={{ fontSize: 12.5, color: C.dim, marginBottom: 8 }}>Hardest chapters left — start here</div>
                     {s.priority.filter((c) => c.d === 3).map((c) => (
                       <div key={c.i} style={{ display: "flex", alignItems: "center", gap: 9, padding: "5px 0" }}>
-                        <div style={{ width: 6, height: 6, borderRadius: 99, background: C.red }} />
+                        <div style={{ width: 6, height: 6, borderRadius: 99, background: C.accent }} />
                         <div style={{ flex: 1, fontSize: 14 }}>{c.name}</div>
                         <div style={{ fontSize: 12.5, color: C.dim, fontVariantNumeric: "tabular-nums" }}>{c.cost.toFixed(1)}h</div>
                       </div>
@@ -1529,6 +1606,25 @@ function Plan({ data }) {
           </div>
         );
       })}
+    </>
+  );
+
+  return (
+    <div style={{ padding: "60px 24px 0" }}>
+      <Header title="Plan" sub="Phases sized to how each subject behaves" />
+      {split ? (
+        <Split
+          main={phases}
+          side={<>{data.length > 0 && <SubjectOrder data={data} />}{paceCard}</>}
+        />
+      ) : (
+        <>
+          {data.length > 0 && <SubjectOrder data={data} />}
+          {paceCard}
+          <div style={{ height: SP.section - SP.group }} />
+          {phases}
+        </>
+      )}
     </div>
   );
 }
@@ -1542,6 +1638,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
   const [draftWeight, setDraftWeight] = useState([]);
   const [confirm, setConfirm] = useState(false);
   const [orderFor, setOrderFor] = useState(null);   // chapter index whose exercise order is open
+  const split = useSplit();
 
   useEffect(() => {
     if (s) { setDraftNames(s.names ?? []); setDraftDiff(s.diffs ?? []); setDraftWeight(s.weight ?? []); setDraftCount(s.chapters); }
@@ -1614,24 +1711,16 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
     flash("Changes confirmed");
   };
 
-  return (
-    <div style={{ padding: "60px 24px 0" }}>
-      <Tap onClick={onBack} style={{ background: "transparent", color: C.amber, padding: 0, fontSize: 16, marginBottom: 22, fontWeight: 500 }}>
-        ‹ Subjects
-      </Tap>
-
-      <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: -1, margin: "0 0 6px" }}>{s.name}</h1>
-      <div style={{ color: C.dim, fontSize: 15 }}>
-        {s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · exam {fmtDate(s.date)} · {s.meta.label}-heavy
-      </div>
-
-      <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, margin: "24px 0 16px" }}>
+  /* the numbers about this subject, and its chapters; side by side on a wide screen */
+  const numbers = (
+    <>
+      <div className="rise card" style={{ ...card, marginBottom: SP.group }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, marginBottom: 12 }}>
           <span style={{ color: C.dim }}>Chapters done</span>
           <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{s.doneCount} / {s.chapters}</span>
         </div>
-        <div style={{ height: 8, background: "#0E141B", borderRadius: 99, overflow: "hidden" }}>
-          <div style={{ height: "100%", width: `${pct}%`, background: C.amber, borderRadius: 99, transition: "width .6s cubic-bezier(.22,1,.36,1)" }} />
+        <div style={{ height: 8, background: C.raised, borderRadius: 99, overflow: "hidden" }}>
+          <div style={{ height: "100%", width: `${pct}%`, background: C.amber, borderRadius: 99, transition: "width .6s cubic-bezier(.32,.72,0,1)" }} />
         </div>
         <div style={{ fontSize: 13, color: C.dim, marginTop: 14, lineHeight: 1.5 }}>
           At your pace, an average remaining chapter here is worth about {s.perChapter.toFixed(1)}h — hard ones cost more, easy ones less.
@@ -1640,8 +1729,8 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
       </div>
 
       {s.perDay != null && s.needed <= 0 && (
-        <div className="rise" style={{ background: "#101C18", border: "1px solid #17342B", borderRadius: 20, padding: 20, marginBottom: 16, animationDelay: ".05s" }}>
-          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5, color: C.green }}>
+        <div className="rise card" style={{ ...hero("fits"), marginBottom: SP.group, animationDelay: ".05s" }}>
+          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5, color: C.fits }}>
             {s.remaining === 0 ? "Nothing left — all chapters done" : "Nothing left — your logged hours cover the rest"}
           </div>
           <div style={{ fontSize: 13, color: C.dim, marginTop: 8, lineHeight: 1.5 }}>
@@ -1651,10 +1740,10 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
       )}
 
       {s.perDay != null && s.needed > 0 && (
-        <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 16, animationDelay: ".05s" }}>
+        <div className="rise card" style={{ ...hero(s.perDay > s.havePerDay ? "shortfall" : "accent"), marginBottom: SP.group, animationDelay: ".05s" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
             <div>
-              <div style={{ fontSize: 40, fontWeight: 700, letterSpacing: -1.6, lineHeight: 1, color: s.perDay > s.havePerDay ? C.red : C.amber, fontVariantNumeric: "tabular-nums" }}>
+              <div style={{ fontSize: 64, fontWeight: 700, letterSpacing: -3, lineHeight: 1, color: s.perDay > s.havePerDay ? C.shortfall : C.accent }}>
                 {s.perDay.toFixed(1)}h
               </div>
               <div style={{ fontSize: 14, color: C.dim, marginTop: 8, lineHeight: 1.45 }}>
@@ -1677,12 +1766,12 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
       )}
 
       {s.syl && (
-        <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 16, animationDelay: ".1s" }}>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>{s.syl.title}</div>
+        <div className="rise card" style={{ ...card, marginBottom: SP.group, animationDelay: ".1s" }}>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{s.syl.title}</div>
           <div style={{ fontSize: 13, color: C.dim, marginTop: 3 }}>{s.syl.board} {s.syl.session} · {s.syl.totalMarks}-mark paper</div>
           <div style={{ fontSize: 14, marginTop: 12, lineHeight: 1.5 }}>
             These chapters are worth about <b style={{ fontWeight: 650 }}>{fmtMarks(s.marks)}</b> of {s.syl.totalMarks} marks
-            {s.marksLeft < s.marks - 0.01 && <>, and <b style={{ fontWeight: 650, color: C.amber }}>{fmtMarks(s.marksLeft)}</b> of that is still to do</>}.
+            {s.marksLeft < s.marks - 0.01 && <>, and <b style={{ fontWeight: 650, color: C.accentText }}>{fmtMarks(s.marksLeft)}</b> of that is still to do</>}.
           </div>
           <div style={{ fontSize: 12, color: C.dim, marginTop: 10, lineHeight: 1.5 }}>
             Unit marks are official. CBSE doesn't set marks per chapter, so each chapter's share comes from
@@ -1702,18 +1791,23 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
           onTarget={(v) => onPatch(s.id, { target: v })}
         />
       )}
+    </>
+  );
 
+  const chapterList = (
+    <>
+      <SectionLabel>Chapters</SectionLabel>
       <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
-        <Tap onClick={() => onEdit(s)} style={{ flex: 1, background: C.card, border: `1px solid ${C.line}`, color: C.text, padding: "14px 0", borderRadius: 14, fontSize: 14, fontWeight: 600 }}>
+        <Tap onClick={() => onEdit(s)} style={{ flex: 1, background: C.surface, border: `1px solid ${C.line}`, color: C.text, padding: "14px 0", borderRadius: 14, fontSize: 14, fontWeight: 600 }}>
           Edit details
         </Tap>
-        <Tap onClick={() => setEditing(!editing)} style={{ flex: 1, background: editing ? C.amber : C.card, border: `1px solid ${editing ? C.amber : C.line}`, color: editing ? "#181203" : C.text, padding: "14px 0", borderRadius: 14, fontSize: 14, fontWeight: 600 }}>
+        <Tap onClick={() => setEditing(!editing)} style={{ flex: 1, background: editing ? C.accent : C.surface, border: `1px solid ${editing ? C.amber : C.line}`, color: editing ? C.onAccent : C.text, padding: "14px 0", borderRadius: 14, fontSize: 14, fontWeight: 600 }}>
           {editing ? "Editing chapters" : "Edit chapters"}
         </Tap>
       </div>
 
       {editing && (
-        <div className="rise" style={{ background: C.card, border: `1px solid ${C.amber}`, borderRadius: 18, padding: "14px 18px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div className="rise" style={{ background: C.surface, border: `1px solid ${C.accent}`, borderRadius: 18, padding: "14px 18px", marginBottom: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 600 }}>Number of chapters</div>
             <div style={{ fontSize: 12, color: C.dim, marginTop: 3 }}>
@@ -1750,9 +1844,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
                     key={dd.v}
                     onClick={() => setDraftDiff((p) => p.map((x, j) => (j === i ? dd.v : x)))}
                     style={{
-                      flex: 1, background: on ? dd.color : C.cardHi,
-                      color: on ? "#0B0E13" : C.dim,
-                      border: `1px solid ${on ? dd.color : C.line}`,
+                      flex: 1, ...choice(on),
                       borderRadius: 9, padding: "7px 0", fontSize: 12, fontWeight: 650,
                     }}
                   >
@@ -1782,7 +1874,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
                 onClick={() => onToggle(s.id, i)}
                 style={{ width: "100%", textAlign: "left", background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: ch ? "14px 16px 18px" : "14px 16px", display: "flex", alignItems: ch ? "flex-start" : "center", gap: 13, color: C.text }}
               >
-                <div style={{ width: 22, height: 22, borderRadius: 99, border: `1.5px solid ${s.done[i] ? C.green : C.line}`, background: s.done[i] ? C.green : "transparent", color: "#08120E", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", transition: "all .25s cubic-bezier(.34,1.56,.64,1)", flexShrink: 0 }}>
+                <div style={{ width: 22, height: 22, borderRadius: 99, border: `1.5px solid ${s.done[i] ? C.accent : C.lineHi}`, background: s.done[i] ? C.accent : "transparent", color: C.onAccent, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", transition: "all .25s cubic-bezier(.32,.72,0,1)", flexShrink: 0 }}>
                   {s.done[i] ? "✓" : ""}
                 </div>
                 <span style={{ flex: 1, minWidth: 0 }}>
@@ -1849,10 +1941,34 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
         <Tap
           onClick={() => (confirm ? onRemove(s.id) : setConfirm(true))}
           onPointerLeave={() => setConfirm(false)}
-          style={{ width: "100%", marginTop: 22, background: confirm ? C.red : "transparent", border: `1px solid ${C.red}`, color: confirm ? "#1A0A0A" : C.red, padding: "15px 0", borderRadius: 16, fontSize: 15, fontWeight: 600, transition: "background .25s ease, color .25s ease" }}
+          style={{ width: "100%", marginTop: 22, background: confirm ? C.accent : "transparent", border: `1px solid ${C.accent}`, color: confirm ? C.onAccent : C.accentText, padding: "15px 0", borderRadius: 16, fontSize: 15, fontWeight: 600, transition: "background .25s cubic-bezier(.32,.72,0,1), color .25s cubic-bezier(.32,.72,0,1)" }}
         >
           {confirm ? "Tap again to remove" : "Remove subject"}
         </Tap>
+      )}
+    </>
+  );
+
+  return (
+    <div style={{ padding: "60px 24px 0" }}>
+      <Tap onClick={onBack} style={{ background: "transparent", color: C.accentText, padding: 0, fontSize: 16, marginBottom: 22, fontWeight: 500 }}>
+        ‹ Subjects
+      </Tap>
+
+      <h1 style={{ fontSize: 34, fontWeight: 700, letterSpacing: -1, margin: "0 0 6px" }}>{s.name}</h1>
+      <div style={{ color: C.dim, fontSize: 15 }}>
+        {s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · exam {fmtDate(s.date)} · {s.meta.label}-heavy
+      </div>
+
+      <div style={{ height: 24 }} />
+      {split ? (
+        <Split main={chapterList} side={numbers} />
+      ) : (
+        <>
+          {numbers}
+          <div style={{ height: SP.section - SP.group }} />
+          {chapterList}
+        </>
       )}
 
       <div style={{ height: editing ? 104 : 0 }} />
@@ -1881,10 +1997,10 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
   const expectPct = Math.round((plan.expectedMarks / total) * 100);
 
   return (
-    <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 16, animationDelay: ".15s" }}>
+    <div className="rise card" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 18, padding: 20, marginBottom: 16, animationDelay: ".15s" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <div>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>Fastest way to {target}%</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>Fastest way to {target}%</div>
           <div style={{ fontSize: 13, color: C.dim, marginTop: 3 }}>{fmtMarks(goal)} of {total} marks</div>
         </div>
         <div role="group" aria-label="Target score" style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1902,7 +2018,7 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
         <>
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
             <div style={{ flex: 1, background: C.cardHi, borderRadius: 14, padding: "12px 14px" }}>
-              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: C.amber, fontVariantNumeric: "tabular-nums" }}>{Math.round(hoursLeft)}h</div>
+              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: C.accentText, fontVariantNumeric: "tabular-nums" }}>{Math.round(hoursLeft)}h</div>
               <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>
                 {plan.skipped.length ? `instead of ${Math.round(hoursAll)}h` : "every chapter left"}
                 {logged > 0 && `, after ${Math.round(logged)}h already logged`}
@@ -1923,7 +2039,7 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
                 <span style={{ width: 18, flexShrink: 0, color: C.dim, fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>{k + 1}</span>
                 <span style={{ flex: 1, minWidth: 0, fontSize: 14, lineHeight: 1.4 }}>
                   {nameOf(id)}
-                  {plan.extras.includes(id) && <span style={{ display: "block", color: C.green, fontSize: 12, marginTop: 2 }}>Cheap extra marks: added as safety margin</span>}
+                  {plan.extras.includes(id) && <span style={{ display: "block", color: C.info, fontSize: 12, marginTop: 2 }}>Cheap extra marks: added as safety margin</span>}
                 </span>
                 <span style={{ flexShrink: 0, fontSize: 12.5, color: C.dim, fontVariantNumeric: "tabular-nums" }}>
                   ~{fmtMarks(marksOf(id))} · {hoursOf(id).toFixed(1)}h
@@ -1949,7 +2065,7 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
           {" "}{note}
         </div>
       ) : (
-        <div role="status" style={{ marginTop: 12, background: "#1C1710", border: "1px solid #3A2E17", borderRadius: 12, padding: "12px 14px", fontSize: 13.5, lineHeight: 1.5, color: "#E9D3A6" }}>
+        <div role="status" style={{ ...notice, marginTop: 12, borderRadius: 12, padding: "12px 14px", fontSize: 13.5, lineHeight: 1.5 }}>
           Even every chapter gets you about {Math.round(plan.expectedMarks)} ({expectPct}%) at {accuracy}% accuracy.
           {" "}{target}% needs better accuracy, not more chapters: more practice questions and full sample papers.
         </div>
@@ -1976,7 +2092,7 @@ function ExerciseSheet({ ch, scale, multiplier, onClose }) {
   const groundworkFor = (e) =>
     items.filter((d) => d.ex !== "Misc" && d.builds.includes(e.ex) && d.priority === e.priority).map((d) => d.ex);
   const tag = (text, color) => (
-    <span style={{ display: "inline-block", fontSize: 11.5, fontWeight: 600, color, background: "rgba(255,255,255,.05)", border: `1px solid ${C.line}`, borderRadius: 99, padding: "2px 8px", marginRight: 6, marginTop: 6 }}>
+    <span style={{ display: "inline-block", fontSize: 11.5, fontWeight: 600, color, background: C.raised, border: `1px solid ${C.line}`, borderRadius: 99, padding: "2px 8px", marginRight: 6, marginTop: 6 }}>
       {text}
     </span>
   );
@@ -1994,7 +2110,7 @@ function ExerciseSheet({ ch, scale, multiplier, onClose }) {
         style={{ ...sheetPanel(desktop), padding: desktop ? "16px 28px 28px" : "10px 24px 28px", overflowY: "auto", outline: "none" }}
       >
         <SheetHandle desktop={desktop} />
-        <div style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>Ch {ch.no} · {ch.name}</div>
+        <div style={{ fontSize: 13, color: C.accentText, fontWeight: 600 }}>Ch {ch.no} · {ch.name}</div>
         <h2 id="exercise-order-title" style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.6, margin: "8px 0 6px" }}>
           Which exercise first
         </h2>
@@ -2014,8 +2130,8 @@ function ExerciseSheet({ ch, scale, multiplier, onClose }) {
                     Short on time? These can wait.
                   </div>
                 )}
-                <div style={{ display: "flex", gap: 12, background: C.card, border: `1px solid ${k === 0 ? "rgba(242,169,59,.55)" : C.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 8, opacity: later ? 0.78 : 1 }}>
-                  <div aria-hidden="true" style={{ width: 24, height: 24, borderRadius: 99, flexShrink: 0, background: k === 0 ? C.amber : C.cardHi, color: k === 0 ? "#181203" : C.dim, fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", fontVariantNumeric: "tabular-nums" }}>
+                <div style={{ display: "flex", gap: 12, background: C.card, border: `1px solid ${k === 0 ? C.accent : C.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 8, opacity: later ? 0.78 : 1 }}>
+                  <div aria-hidden="true" style={{ width: 24, height: 24, borderRadius: 99, flexShrink: 0, background: k === 0 ? C.amber : C.cardHi, color: k === 0 ? C.onAccent : C.dim, fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", fontVariantNumeric: "tabular-nums" }}>
                     {k + 1}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -2027,10 +2143,10 @@ function ExerciseSheet({ ch, scale, multiplier, onClose }) {
                       {e.q} question{e.q === 1 ? "" : "s"} · ~{(exerciseMinutes(ch, e, scale) / 60).toFixed(1)}h practice
                     </div>
                     <div>
-                      {k === 0 && tag("Start here", C.amber)}
-                      {e.scope && tag("Not in CBSE 2026-27 syllabus", C.red)}
-                      {e.ex !== "Misc" && e.yield === 3 && tag("High yield", C.green)}
-                      {e.ex !== "Misc" && e.yield < e.priority && feeds.length > 0 && tag(`Groundwork for ${feeds.join(", ")}`, C.blue)}
+                      {k === 0 && tag("Start here", C.accentText)}
+                      {e.scope && tag("Not in CBSE 2026-27 syllabus", C.accentText)}
+                      {e.ex !== "Misc" && e.yield === 3 && tag("High yield", C.info)}
+                      {e.ex !== "Misc" && e.yield < e.priority && feeds.length > 0 && tag(`Groundwork for ${feeds.join(", ")}`, C.dim)}
                       {e.ex !== "Misc" && e.priority === 1 && !e.scope && tag("Lower yield", C.dim)}
                       {e.ex === "Misc" && tag("Mixed revision", C.dim)}
                     </div>
@@ -2054,14 +2170,13 @@ function ExerciseSheet({ ch, scale, multiplier, onClose }) {
 }
 
 /* ------------------------------ WEIGHTAGE ------------------------------ */
-const WEIGHT_COLOR = { 3: C.amber, 2: C.dim, 1: C.blue };
 const DIFF_QUESTION = "How hard is this chapter?";
 const WEIGHT_QUESTION = "How many marks does this usually carry?";
 const WEIGHT_EXPLAINER = "Difficulty is how hard it is for you. Weightage is how much it's worth in the exam. A chapter can be easy and still carry a lot of marks.";
 const tinyLabel = { display: "block", fontSize: 11.5, color: C.dim, marginBottom: 5 };
 const chip = (color) => ({
   display: "inline-block", fontSize: 11.5, fontWeight: 650, color, lineHeight: 1.3,
-  background: "rgba(255,255,255,.04)", border: `1px solid ${C.line}`, borderRadius: 99,
+  background: C.raised, border: `1px solid ${C.line}`, borderRadius: 99,
   padding: "2px 8px", marginRight: 6, fontVariantNumeric: "tabular-nums",
 });
 
@@ -2071,7 +2186,6 @@ function WeightPicker({ value, onChange }) {
     <div role="group" aria-label={WEIGHT_QUESTION} style={{ display: "flex", gap: 5, flex: 1 }}>
       {WEIGHTS.map((w) => {
         const on = value === w.v;
-        const col = WEIGHT_COLOR[w.v];
         return (
           <Tap
             key={w.v}
@@ -2079,8 +2193,7 @@ function WeightPicker({ value, onChange }) {
             aria-pressed={on}
             onClick={() => onChange(w.v)}
             style={{
-              flex: 1, background: on ? col : C.cardHi, color: on ? "#0B0E13" : C.dim,
-              border: `1px solid ${on ? col : C.line}`, borderRadius: 8, padding: "5px 0", fontSize: 11.5, fontWeight: 650,
+              flex: 1, ...choice(on), borderRadius: 8, padding: "5px 0", fontSize: 11.5, fontWeight: 650,
             }}
           >
             {w.label}
@@ -2215,7 +2328,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
   };
 
   const pill = (on) => ({
-    flex: 1, background: on ? C.amber : C.cardHi, color: on ? "#181203" : C.dim,
+    flex: 1, background: on ? C.amber : C.cardHi, color: on ? C.onAccent : C.dim,
     border: `1px solid ${on ? C.amber : C.line}`, borderRadius: 12, padding: "12px 4px", fontSize: 13, fontWeight: 650,
   });
 
@@ -2263,7 +2376,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
               <Tap
                 className="focus-ring"
                 onClick={() => setPicked(chosen.length === syl.chapters.length ? new Set() : new Set(syl.chapters.map((c) => c.id)))}
-                style={{ background: "none", color: C.amber, fontSize: 13, fontWeight: 600, padding: "4px 2px", borderRadius: 6 }}
+                style={{ background: "none", color: C.accentText, fontSize: 13, fontWeight: 600, padding: "4px 2px", borderRadius: 6 }}
               >
                 {chosen.length === syl.chapters.length ? "Clear all" : "Select all"}
               </Tap>
@@ -2278,9 +2391,9 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
                   aria-pressed={on}
                   aria-label={`Chapter ${c.no}, ${c.name}. ${dm.label}, ${c.questions} questions, about ${fmtMarks(c.marksEst)} marks`}
                   onClick={() => toggle(c.id)}
-                  style={{ width: "100%", textAlign: "left", background: C.card, border: `1px solid ${on ? "rgba(242,169,59,.55)" : C.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 8, display: "flex", alignItems: "center", gap: 12, color: C.text }}
+                  style={{ width: "100%", textAlign: "left", background: C.card, border: `1px solid ${on ? C.accent : C.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 8, display: "flex", alignItems: "center", gap: 12, color: C.text }}
                 >
-                  <div aria-hidden="true" style={{ width: 22, height: 22, borderRadius: 7, border: `1.5px solid ${on ? C.amber : C.line}`, background: on ? C.amber : "transparent", color: "#181203", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all .2s ease" }}>
+                  <div aria-hidden="true" style={{ width: 22, height: 22, borderRadius: 7, border: `1.5px solid ${on ? C.amber : C.line}`, background: on ? C.amber : "transparent", color: C.onAccent, fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all .2s cubic-bezier(.32,.72,0,1)" }}>
                     {on ? "✓" : ""}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -2296,7 +2409,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
             <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 14px", margin: "4px 0 10px", fontSize: 13.5, lineHeight: 1.5 }}>
               <b style={{ fontWeight: 650 }}>{chosen.length}</b> chapter{chosen.length === 1 ? "" : "s"} · about{" "}
               <b style={{ fontWeight: 650 }}>{fmtMarks(chosenMarks)}</b> of {syl.totalMarks} marks ·{" "}
-              <b style={{ fontWeight: 650, color: C.amber }}>{Math.round(chosenHours)}h</b> of work for you
+              <b style={{ fontWeight: 650, color: C.accentText }}>{Math.round(chosenHours)}h</b> of work for you
             </div>
             <div style={{ fontSize: 12, color: C.dim, marginBottom: 18, lineHeight: 1.5 }}>
               Questions are every numbered NCERT exercise question (2026-27 reprint). CBSE gives marks per
@@ -2317,7 +2430,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
                   onChange={(e) => setPasteText(e.target.value)}
                   style={{ ...inputStyle, resize: "vertical", minHeight: 150, lineHeight: 1.5, fontSize: 15, marginBottom: 10 }}
                 />
-                <div aria-live="polite" style={{ fontSize: 13, color: parsed.length ? C.amber : C.dim, fontWeight: 600, marginBottom: 8 }}>
+                <div aria-live="polite" style={{ fontSize: 13, color: parsed.length ? C.accentText : C.dim, fontWeight: 600, marginBottom: 8 }}>
                   {parsed.length} chapter{parsed.length === 1 ? "" : "s"} found
                   {parsedAll.length > MAX_CHAPTERS && <span style={{ color: C.dim, fontWeight: 400 }}> · only the first {MAX_CHAPTERS} are kept</span>}
                 </div>
@@ -2376,7 +2489,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
             <label style={lbl}>How does this subject behave?</label>
             <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
               {Object.entries(TYPE_META).map(([k, v]) => (
-                <Tap key={k} onClick={() => set("type", k)} style={{ flex: 1, background: f.type === k ? C.amber : C.cardHi, color: f.type === k ? "#181203" : C.dim, border: `1px solid ${f.type === k ? C.amber : C.line}`, borderRadius: 12, padding: "12px 4px", fontSize: 13, fontWeight: 600 }}>
+                <Tap key={k} onClick={() => set("type", k)} style={{ flex: 1, background: f.type === k ? C.amber : C.cardHi, color: f.type === k ? C.onAccent : C.dim, border: `1px solid ${f.type === k ? C.amber : C.line}`, borderRadius: 12, padding: "12px 4px", fontSize: 13, fontWeight: 600 }}>
                   {v.label}
                 </Tap>
               ))}
@@ -2387,7 +2500,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
         <label style={lbl}>How fast do you get through a chapter here?</label>
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
           {PACE.map((p) => (
-            <Tap key={p.id} onClick={() => set("pace", p.id)} style={{ flex: 1, background: f.pace === p.id ? C.amber : C.cardHi, color: f.pace === p.id ? "#181203" : C.dim, border: `1px solid ${f.pace === p.id ? C.amber : C.line}`, borderRadius: 12, padding: "12px 4px", fontSize: 13, fontWeight: 650 }}>
+            <Tap key={p.id} onClick={() => set("pace", p.id)} style={{ flex: 1, background: f.pace === p.id ? C.amber : C.cardHi, color: f.pace === p.id ? C.onAccent : C.dim, border: `1px solid ${f.pace === p.id ? C.amber : C.line}`, borderRadius: 12, padding: "12px 4px", fontSize: 13, fontWeight: 650 }}>
               {p.label}
             </Tap>
           ))}
@@ -2400,7 +2513,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
         <label style={lbl}>How confident are you? ({f.confidence}/5)</label>
         <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
           {[1, 2, 3, 4, 5].map((n) => (
-            <Tap key={n} onClick={() => set("confidence", n)} style={{ flex: 1, background: f.confidence === n ? C.amber : C.cardHi, color: f.confidence === n ? "#181203" : C.dim, border: `1px solid ${f.confidence === n ? C.amber : C.line}`, borderRadius: 12, padding: "13px 0", fontSize: 15, fontWeight: 650 }}>
+            <Tap key={n} onClick={() => set("confidence", n)} style={{ flex: 1, background: f.confidence === n ? C.amber : C.cardHi, color: f.confidence === n ? C.onAccent : C.dim, border: `1px solid ${f.confidence === n ? C.amber : C.line}`, borderRadius: 12, padding: "13px 0", fontSize: 15, fontWeight: 650 }}>
               {n}
             </Tap>
           ))}
@@ -2415,7 +2528,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
         <div style={{ fontSize: 12, color: C.dim, marginBottom: 12, lineHeight: 1.5 }}>
           Used to catch the gap between how a subject feels and how it's actually going.
         </div>
-        <div role="status" style={{ background: C.card, border: `1px solid ${factor.overconfident ? "#3A2E17" : C.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 24, fontSize: 13, lineHeight: 1.5, color: C.dim }}>
+        <div role="status" style={{ background: C.card, border: `1px solid ${factor.overconfident ? C.accentLine : C.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 24, fontSize: 13, lineHeight: 1.5, color: C.dim }}>
           <span style={{ color: C.text, fontWeight: 650 }}>Hours multiplier ×{factor.factor.toFixed(2)}</span>
           {factor.overconfident
             ? <> — your score decides this on its own, because it disagrees with a confidence of {f.confidence}/5.</>
@@ -2426,7 +2539,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
           <Tap onClick={onClose} style={{ flex: 1, background: "transparent", border: `1px solid ${C.line}`, color: C.dim, padding: "17px 0", borderRadius: 16, fontSize: 15, fontWeight: 600 }}>
             Cancel
           </Tap>
-          <Tap disabled={!valid} onClick={submit} style={{ flex: 2, background: C.amber, color: "#181203", padding: "17px 0", borderRadius: 16, fontSize: 17, fontWeight: 650 }}>
+          <Tap disabled={!valid} onClick={submit} style={{ flex: 2, background: C.amber, color: C.onAccent, padding: "17px 0", borderRadius: 16, fontSize: 17, fontWeight: 650 }}>
             {mode === "edit" ? "Save changes" : "Save subject"}
           </Tap>
         </div>
@@ -2438,7 +2551,7 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
 /* ----------------------------- CHROME ----------------------------- */
 function Header({ title, sub }) {
   return (
-    <div style={{ marginBottom: 26 }}>
+    <div style={{ marginBottom: SP.section }}>
       <h1 className="rise" style={{ fontSize: 34, fontWeight: 700, letterSpacing: -1, margin: 0 }}>{title}</h1>
       <div className="rise" style={{ color: C.dim, fontSize: 15, marginTop: 6, animationDelay: ".05s" }}>{sub}</div>
     </div>
@@ -2447,23 +2560,23 @@ function Header({ title, sub }) {
 
 const Icon = {
   subjects: (c) => (
-    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round">
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style={{ stroke: c }} strokeWidth="2" strokeLinecap="round">
       <path d="M4 5h16M4 12h16M4 19h10" />
     </svg>
   ),
   reality: (c) => (
-    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round">
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style={{ stroke: c }} strokeWidth="2" strokeLinecap="round">
       <path d="M5 20V11M12 20V4M19 20v-6" />
     </svg>
   ),
   plan: (c) => (
-    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round">
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style={{ stroke: c }} strokeWidth="2" strokeLinecap="round">
       <rect x="3" y="5" width="18" height="16" rx="3" />
       <path d="M8 3v4M16 3v4M3 11h18" />
     </svg>
   ),
   time: (c) => (
-    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round">
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" style={{ stroke: c }} strokeWidth="2" strokeLinecap="round">
       <circle cx="12" cy="12" r="9" />
       <path d="M12 7v5.2l3.2 2" />
     </svg>
@@ -2488,17 +2601,18 @@ function Sidebar({ screen, go, onAdd }) {
       aria-label="Main"
       style={{
         position: "fixed", top: 0, bottom: 0, left: 0, width: SIDEBAR_W, zIndex: 40,
-        borderRight: `1px solid ${C.line}`, background: "#0D1117",
+        borderRight: `1px solid ${C.line}`, background: C.raised,
         padding: "36px 16px 24px", boxSizing: "border-box",
         display: "flex", flexDirection: "column", gap: 4,
       }}
     >
-      <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5, color: C.amber, padding: "0 12px 28px" }}>
-        Feasible
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 12px 28px" }}>
+        <Mark size={20} />
+        <span style={{ fontSize: 20, fontWeight: 700, letterSpacing: -0.5, color: C.text }}>Feasible</span>
       </div>
       {tabs.map((t, i) => {
         const active = t.id === current;
-        const col = active ? C.amber : hover === t.id ? C.text : C.dim;
+        const col = active ? C.accentText : hover === t.id ? C.text : C.dim;
         return (
           <Tap
             key={t.id}
@@ -2509,11 +2623,14 @@ function Sidebar({ screen, go, onAdd }) {
             onMouseLeave={() => setHover(null)}
             style={{
               display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
-              background: active ? C.cardHi : hover === t.id ? C.card : "transparent",
+              background: active ? C.surface : hover === t.id ? C.hover : "transparent",
+              boxShadow: active ? "var(--shadow)" : "none",
               color: col, borderRadius: 12, padding: "11px 12px", fontSize: 15, fontWeight: 600,
-              transition: "background .2s ease, color .2s ease",
+              position: "relative",
+              transition: `background .2s ${EASE}, color .2s ${EASE}`,
             }}
           >
+            {active && <span aria-hidden="true" style={{ position: "absolute", left: 0, top: 9, bottom: 9, width: 3, borderRadius: 3, background: C.accent }} />}
             {t.icon(col)}
             {t.label}
           </Tap>
@@ -2522,7 +2639,7 @@ function Sidebar({ screen, go, onAdd }) {
       <div style={{ flex: 1 }} />
       <Tap
         onClick={onAdd}
-        style={{ width: "100%", background: C.amber, color: "#181203", padding: "13px 0", borderRadius: 12, fontSize: 15, fontWeight: 650 }}
+        style={{ width: "100%", background: C.amber, color: C.onAccent, padding: "13px 0", borderRadius: 12, fontSize: 15, fontWeight: 650 }}
       >
         Add a subject
       </Tap>
@@ -2565,17 +2682,17 @@ function TabBar({ screen, go }) {
           display: "flex", gap: 3, alignItems: "center",
           width: open ? "min(398px, calc(100vw - 28px))" : "auto",
           maxWidth: "calc(100vw - 28px)",
-          background: "rgba(18,23,30,.88)",
+          background: C.glass,
           backdropFilter: "blur(26px)", WebkitBackdropFilter: "blur(26px)",
           border: `1px solid ${C.line}`, borderRadius: 99, padding: 6,
-          boxShadow: "0 12px 34px rgba(0,0,0,.55)",
+          boxShadow: "var(--shadow-pop)",
           boxSizing: "border-box", overflow: "hidden",
           transition: "width .4s cubic-bezier(.32,.72,0,1)",
         }}
       >
         {tabs.map((t, i) => {
           const active = t.id === screen;
-          const col = active ? C.amber : C.dim;
+          const col = active ? C.accentText : C.dim;
           return (
             <Tap
               key={t.id}
@@ -2583,9 +2700,9 @@ function TabBar({ screen, go }) {
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
                 flex: open ? "1 1 0" : "0 0 auto", minWidth: 0,
-                background: active ? C.cardHi : "transparent",
+                background: active ? C.surface : "transparent",
                 borderRadius: 99, padding: open ? "11px 6px" : "11px 13px", color: col,
-                transition: "background .3s ease, padding .4s cubic-bezier(.32,.72,0,1)",
+                transition: "background .3s cubic-bezier(.32,.72,0,1), padding .4s cubic-bezier(.32,.72,0,1)",
               }}
             >
               {t.icon(col)}
@@ -2594,7 +2711,7 @@ function TabBar({ screen, go }) {
                   fontSize: 12.5, fontWeight: 650, color: col,
                   maxWidth: open ? 72 : 0, opacity: open ? 1 : 0,
                   overflow: "hidden", whiteSpace: "nowrap", textOverflow: "clip",
-                  transition: "max-width .4s cubic-bezier(.32,.72,0,1), opacity .3s ease",
+                  transition: "max-width .4s cubic-bezier(.32,.72,0,1), opacity .3s cubic-bezier(.32,.72,0,1)",
                 }}
               >
                 {t.label}

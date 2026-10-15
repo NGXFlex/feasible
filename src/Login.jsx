@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { C, Tap, inputStyle } from "./ui.jsx";
+import { C, Tap, Mark, inputStyle } from "./ui.jsx";
 
 /* ------------------------------------------------------------------ */
 /*  Login — sign in, create an account, or reset a password.            */
@@ -84,16 +84,16 @@ function validate(mode, email, password) {
 }
 
 const lbl = { fontSize: 13, color: C.dim, display: "block" };
-const errText = { fontSize: 12.5, color: C.red, marginTop: 8, lineHeight: 1.5 };
+const errText = { fontSize: 12.5, color: C.accentText, marginTop: 8, lineHeight: 1.5 };
 
 const css = `
-  .auth-field { transition: border-color .2s ease, box-shadow .2s ease }
-  .auth-field::placeholder { color: #8592A4; opacity: 1 }  /* a touch lighter than dim so it clears 4.5:1 on the field */
-  .auth-field:focus { outline: 2px solid transparent; box-shadow: 0 0 0 1px ${C.amber}, 0 0 0 4px rgba(242,169,59,.16) }
+  .auth-field { transition: border-color .2s cubic-bezier(.32,.72,0,1), box-shadow .2s cubic-bezier(.32,.72,0,1) }
+  .auth-field::placeholder { color: ${C.dim}; opacity: 1 }  /* dim clears 4.5:1 on the field in both themes */
+  .auth-field:focus { outline: 2px solid transparent; box-shadow: 0 0 0 1px ${C.accent}, 0 0 0 4px ${C.accentSoft} }
   .auth-field:-webkit-autofill { -webkit-text-fill-color: ${C.text}; -webkit-box-shadow: 0 0 0 40px ${C.cardHi} inset; caret-color: ${C.text} }
-  .auth-link { appearance: none; background: none; border: none; padding: 4px 0; font: inherit; font-size: 13px; font-weight: 600; color: ${C.amber}; cursor: pointer; border-radius: 6px; transition: opacity .18s ease }
+  .auth-link { appearance: none; background: none; border: none; padding: 4px 0; font: inherit; font-size: 13px; font-weight: 600; color: ${C.accentText}; cursor: pointer; border-radius: 6px; transition: opacity .18s cubic-bezier(.32,.72,0,1) }
   .auth-link:hover { opacity: .8 }
-  .auth-eye { color: ${C.dim}; transition: color .18s ease }
+  .auth-eye { color: ${C.dim}; transition: color .18s cubic-bezier(.32,.72,0,1) }
   .auth-eye:hover, .auth-eye:focus-visible { color: ${C.text} }
   .auth-slash { transition: stroke-dashoffset .28s cubic-bezier(.32,.72,0,1) }
   @keyframes authspin { to { transform: rotate(360deg) } }
@@ -212,14 +212,17 @@ export default function Login({ startMode = "signin", api, hasPlan, firstRun, on
   const fieldStyle = (bad) => ({
     ...inputStyle,
     outline: undefined,                 // let the .auth-field focus ring show
-    border: `1px solid ${bad ? C.red : C.line}`,
+    border: `1px solid ${bad ? C.accent : C.line}`,
   });
 
   return (
     <div style={{ padding: "72px 24px 40px" }}>
       <style>{css}</style>
 
-      <div className="rise" style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>Feasible</div>
+      <div className="rise" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <Mark size={32} />
+        <span style={{ fontSize: 13, color: C.accentText, fontWeight: 600 }}>Feasible</span>
+      </div>
       <h1 key={mode} className="rise" style={{ fontSize: 36, lineHeight: 1.12, fontWeight: 700, letterSpacing: -1.1, margin: "14px 0 12px", animationDelay: ".05s" }}>
         {copy.title}
       </h1>
@@ -228,8 +231,8 @@ export default function Login({ startMode = "signin", api, hasPlan, firstRun, on
       </p>
 
       {unavailable && (
-        <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginTop: 28, animationDelay: ".14s" }}>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>Accounts aren't available</div>
+        <div className="rise card" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 18, padding: 20, marginTop: 28, animationDelay: ".14s" }}>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>Accounts aren't available</div>
           <div style={{ fontSize: 13, color: C.dim, marginTop: 3, lineHeight: 1.5 }}>
             Cloud sync isn't set up in this build. Your plan is still saved on this device.
           </div>
@@ -238,16 +241,16 @@ export default function Login({ startMode = "signin", api, hasPlan, firstRun, on
 
       {sent ? (
         <div style={{ marginTop: 36 }}>
-          <div role="status" className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 20 }}>
+          <div role="status" className="rise card" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 18, padding: 20, marginBottom: 20 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-              <div style={{ width: 6, height: 6, borderRadius: 99, background: C.green }} />
-              <div style={{ fontSize: 16, fontWeight: 600 }}>Check your email</div>
+              <div style={{ width: 6, height: 6, borderRadius: 99, background: C.info }} />
+              <div style={{ fontSize: 15, fontWeight: 600 }}>Check your email</div>
             </div>
             <div style={{ fontSize: 13, color: C.dim, marginTop: 8, lineHeight: 1.5 }}>
               If {email.trim()} has an account, a reset link is on its way. It can take a minute to arrive.
             </div>
           </div>
-          <Tap className="focus-ring" onClick={() => switchMode("signin")} style={{ width: "100%", background: C.amber, color: "#181203", padding: "17px 0", borderRadius: 16, fontSize: 17, fontWeight: 650 }}>
+          <Tap className="focus-ring" onClick={() => switchMode("signin")} style={{ width: "100%", background: C.amber, color: C.onAccent, padding: "17px 0", borderRadius: 16, fontSize: 17, fontWeight: 650 }}>
             Back to sign in
           </Tap>
         </div>
@@ -337,9 +340,9 @@ export default function Login({ startMode = "signin", api, hasPlan, firstRun, on
             <div
               role="alert"
               className="rise"
-              style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "rgba(255,107,107,.08)", border: "1px solid rgba(255,107,107,.32)", borderRadius: 14, padding: "12px 14px", marginBottom: 18, fontSize: 14, lineHeight: 1.5 }}
+              style={{ display: "flex", gap: 10, alignItems: "flex-start", background: C.accentSoft, border: `1px solid ${C.accentLine}`, borderRadius: 14, padding: "12px 14px", marginBottom: 18, fontSize: 14, lineHeight: 1.5 }}
             >
-              <div style={{ width: 6, height: 6, borderRadius: 99, background: C.red, marginTop: 8, flexShrink: 0 }} />
+              <div style={{ width: 6, height: 6, borderRadius: 99, background: C.accent, marginTop: 8, flexShrink: 0 }} />
               <div>
                 {formError.text}
                 {formError.action && (
@@ -361,7 +364,7 @@ export default function Login({ startMode = "signin", api, hasPlan, firstRun, on
             aria-disabled={unavailable || undefined}
             disabled={unavailable}
             style={{
-              width: "100%", background: C.amber, color: "#181203", padding: "17px 0",
+              width: "100%", background: C.amber, color: C.onAccent, padding: "17px 0",
               borderRadius: 16, fontSize: 17, fontWeight: 650,
               display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
               cursor: busy ? "progress" : unavailable ? "default" : "pointer",
