@@ -174,6 +174,9 @@ export function describeGeminiError(err) {
   if (status === 400 && /pdf|mime|image|document|invalid/i.test(text)) {
     return { status: 400, error: "Gemini couldn't read that file. If it's password-protected or damaged, enter it manually instead." };
   }
+  if (status === 404 || /not found|is not supported|no longer available|deprecated/i.test(text)) {
+    return { status: 500, error: "The PDF reader's model isn't available any more, so importing is down for now. Enter your subjects manually instead." };
+  }
   if (status === 401 || status === 403 || /API key/i.test(text)) {
     return { status: 500, error: "PDF import isn't set up correctly on the server. Use Paste portions for now." };
   }

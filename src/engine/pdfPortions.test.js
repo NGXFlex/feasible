@@ -122,6 +122,10 @@ test("gemini errors: quota says so and points to Paste portions", () => {
   assert.match(quota.error, /Paste portions/);
   assert.equal(describeGeminiError({ message: "RESOURCE_EXHAUSTED: quota exceeded" }).status, 429);
   assert.match(describeGeminiError(new Error("socket hang up")).error, /Paste portions/);
+  // a retired model says so, instead of "try again in a moment"
+  const gone = describeGeminiError(new GoogleGenerativeAIFetchError("[404 Not Found] models/gemini-2.0-flash is not found for API version v1beta", 404, "Not Found"));
+  assert.equal(gone.status, 500);
+  assert.match(gone.error, /isn't available any more/);
 });
 
 test("parser: PDF chapter names keep all-caps names the paste parser treats as headings", () => {

@@ -13,7 +13,8 @@ import { checkPayload, parseModelReply, describeGeminiError, GEMINI_PROMPT } fro
    Needs GEMINI_API_KEY in the environment (Vercel > Project > Settings >
    Environment Variables). GEMINI_MODEL is optional.
 ------------------------------------------------------------------- */
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+// gemini-2.0-flash was shut down on 1 June 2026; set GEMINI_MODEL to move on without a code change
+const MODEL = process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -43,6 +44,8 @@ export default async function handler(req, res) {
     ]);
     reply = result.response.text();
   } catch (err) {
+    // the real reason, for the Vercel function logs (never the key or the file)
+    console.error(`Gemini ${MODEL} failed:`, err?.status ?? "", err?.message ?? err);
     const { status, error } = describeGeminiError(err);
     return res.status(status).json({ error });
   }
