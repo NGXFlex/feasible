@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { C, FONT, Tap, inputStyle } from "./ui.jsx";
 import Login from "./Login.jsx";
+import { SYLLABI, getSyllabus, readinessFactor, dailyNeed } from "./engine/syllabusEngine.js";
 
 
 /* ------------------------------------------------------------------ */
@@ -55,6 +56,20 @@ function hoursBetween(from, to, wd, we, ov) {
     cur = addDays(cur, 1);
   }
   return total;
+}
+
+/* days between from and to that have any study time in them */
+function studyDaysBetween(from, to, wd, we, ov) {
+  let n = 0;
+  let cur = startOfDay(from);
+  const end = startOfDay(to);
+  let guard = 0;
+  while (cur < end && guard++ < 800) {
+    const k = key(cur);
+    if ((k in ov ? ov[k] : defaultHours(cur, wd, we)) > 0) n++;
+    cur = addDays(cur, 1);
+  }
+  return n;
 }
 
 /* ------------------------- persistence -------------------------
@@ -540,18 +555,32 @@ export default function App() {
       const diffs = s.diff ?? Array(s.chapters).fill(2);
       const doneCount = s.done.filter(Boolean).length;
       const remaining = s.chapters - doneCount;
-      const baseChapter = meta.base * (1.6 - 0.16 * s.confidence) * paceMult(s.pace ?? pace);
+      // how many times the expected hours this student needs, from confidence + last score
+      const factor = readinessFactor(s.confidence, s.lastScore);
+      const pm = paceMult(s.pace ?? pace);
+      const baseChapter = meta.base * factor.factor * pm;
+      const syl = s.syllabus ? getSyllabus(s.syllabus) : null;
       let raw = 0;
+      let marks = 0, marksLeft = 0;
+      const costs = [];
       const outstanding = [];
       for (let i = 0; i < s.chapters; i++) {
-        if (s.done[i]) continue;
         const d = diffs[i] ?? 2;
-        const cost = baseChapter * diffMult(d);
+        const ch = syl?.byId[s.refs?.[i]];
+        // a syllabus chapter starts from its own estimate (questions, examples,
+        // concept); re-marking its difficulty scales it from there
+        const cost = ch
+          ? ch.hours.total * (diffMult(d) / diffMult(ch.diff)) * factor.factor * pm
+          : baseChapter * diffMult(d);
+        costs[i] = cost;
+        if (ch) { marks += ch.marksEst; if (!s.done[i]) marksLeft += ch.marksEst; }
+        if (s.done[i]) continue;
         raw += cost;
         outstanding.push({ i, d, cost, name: s.names?.[i] || `Chapter ${i + 1}` });
       }
       return {
-        s, meta, diffs, doneCount, remaining, baseChapter, raw,
+        s, meta, diffs, doneCount, remaining, baseChapter, raw, factor, costs, syl,
+        marks: syl ? marks : null, marksLeft: syl ? marksLeft : null,
         need: Math.max(0, raw - s.logged), outstanding,
       };
     });
@@ -644,6 +673,13 @@ export default function App() {
       const elapsed = Math.min(span, Math.max(0, (startOfDay(new Date()) - startAnchor) / dayMs));
       const expected = Math.round(b.s.chapters * (elapsed / span));
 
+      /* daily load: this subject's remaining hours over the study days left
+         before its exam, next to what an average one of those days holds */
+      const today = new Date();
+      const studyDays = studyDaysBetween(today, b.s.date, wd, we, ov);
+      const perDay = dailyNeed(b.need, studyDays);
+      const havePerDay = studyDays ? hoursBetween(today, b.s.date, wd, we, ov) / studyDays : null;
+
       return {
         ...b.s, meta: b.meta, diffs: b.diffs, doneCount: b.doneCount,
         remaining: b.remaining, baseChapter: b.baseChapter,
@@ -654,7 +690,9 @@ export default function App() {
         gap: available - b.need,
         totalSpare: spare,
         expected, behind: expected - b.doneCount,
-        overconfident: b.s.confidence >= 4 && b.s.lastScore < 60,
+        factor: b.factor, costs: b.costs, syl: b.syl, marks: b.marks, marksLeft: b.marksLeft,
+        studyDays, perDay, havePerDay,
+        overconfident: b.factor.overconfident,
       };
     });
   }, [subjects, wd, we, ov, pace]);
@@ -1197,6 +1235,12 @@ function Subjects({ data, onOpen, onAdd, onSample, sync }) {
                   {"  ·  "}{s.windowDays} study day{s.windowDays === 1 ? "" : "s"} · {s.doneCount}/{s.chapters} chapters
                 </span>
               </div>
+              {s.perDay != null && s.needed > 0 && (
+                <div style={{ marginTop: 6, fontSize: 13, color: C.dim, fontVariantNumeric: "tabular-nums" }}>
+                  Needs <span style={{ color: s.perDay > s.havePerDay ? C.red : C.text, fontWeight: 600 }}>{s.perDay.toFixed(1)}h a day</span>
+                  {s.syl && <> · ~{fmtMarks(s.marksLeft)} marks left</>}
+                </div>
+              )}
             </div>
           </div>
         </Tap>
@@ -1432,6 +1476,8 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
       names: draftNames,
       diff: draftDiff,
       done: Array.from({ length: draftCount }, (_, i) => s.done[i] ?? false),
+      // chapters added here are your own; syllabus links stay on the ones that remain
+      ...(s.refs ? { refs: Array.from({ length: draftCount }, (_, i) => s.refs[i] ?? null) } : {}),
     });
     setEditing(false);
     flash("Changes confirmed");
@@ -1461,6 +1507,47 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
           {s.logged > 0 && ` You've also logged ${s.logged}h here.`}
         </div>
       </div>
+
+      {s.perDay != null && (
+        <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 16, animationDelay: ".05s" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 40, fontWeight: 700, letterSpacing: -1.6, lineHeight: 1, color: s.perDay > s.havePerDay ? C.red : C.amber, fontVariantNumeric: "tabular-nums" }}>
+                {s.perDay.toFixed(1)}h
+              </div>
+              <div style={{ fontSize: 14, color: C.dim, marginTop: 8, lineHeight: 1.45 }}>
+                a day to finish what's left by {fmtDate(s.date)}
+              </div>
+            </div>
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              <div style={{ fontSize: 20, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{s.havePerDay.toFixed(1)}h</div>
+              <div style={{ fontSize: 12, color: C.dim, marginTop: 4, lineHeight: 1.35 }}>in your study day,<br />all subjects</div>
+            </div>
+          </div>
+          <div style={{ fontSize: 13, color: C.dim, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.line}`, lineHeight: 1.55 }}>
+            {Math.round(s.needed)}h left over {s.studyDays} study day{s.studyDays === 1 ? "" : "s"}.{" "}
+            <span style={{ color: C.text, fontWeight: 600 }}>Hours multiplier ×{s.factor.factor.toFixed(2)}</span>
+            {s.factor.overconfident
+              ? <> — your {s.lastScore}% score decides it on its own (×{s.factor.fromScore.toFixed(2)}), because it disagrees with a confidence of {s.confidence}/5.</>
+              : <> — from confidence {s.confidence}/5 (×{s.factor.fromConfidence.toFixed(2)}) and last score {s.lastScore}% (×{s.factor.fromScore.toFixed(2)}), with the score counting 60%.</>}
+          </div>
+        </div>
+      )}
+
+      {s.syl && (
+        <div className="rise" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 20, padding: 20, marginBottom: 16, animationDelay: ".1s" }}>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>{s.syl.title}</div>
+          <div style={{ fontSize: 13, color: C.dim, marginTop: 3 }}>{s.syl.board} {s.syl.session} · {s.syl.totalMarks}-mark paper</div>
+          <div style={{ fontSize: 14, marginTop: 12, lineHeight: 1.5 }}>
+            These chapters are worth about <b style={{ fontWeight: 650 }}>{fmtMarks(s.marks)}</b> of {s.syl.totalMarks} marks
+            {s.marksLeft < s.marks - 0.01 && <>, and <b style={{ fontWeight: 650, color: C.amber }}>{fmtMarks(s.marksLeft)}</b> of that is still to do</>}.
+          </div>
+          <div style={{ fontSize: 12, color: C.dim, marginTop: 10, lineHeight: 1.5 }}>
+            Unit marks are official. CBSE doesn't set marks per chapter, so each chapter's share is estimated
+            from its unit. Question counts are every numbered NCERT exercise question.
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
         <Tap onClick={() => onEdit(s)} style={{ flex: 1, background: C.card, border: `1px solid ${C.line}`, color: C.text, padding: "14px 0", borderRadius: 14, fontSize: 14, fontWeight: 600 }}>
@@ -1526,12 +1613,22 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
             <div style={{ width: 22, height: 22, borderRadius: 99, border: `1.5px solid ${s.done[i] ? C.green : C.line}`, background: s.done[i] ? C.green : "transparent", color: "#08120E", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", transition: "all .25s cubic-bezier(.34,1.56,.64,1)", flexShrink: 0 }}>
               {s.done[i] ? "✓" : ""}
             </div>
-            <span style={{ flex: 1, fontSize: 15, color: s.done[i] ? C.dim : C.text, textDecoration: s.done[i] ? "line-through" : "none" }}>
-              {nm || `Chapter ${i + 1}`}
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 15, color: s.done[i] ? C.dim : C.text, textDecoration: s.done[i] ? "line-through" : "none" }}>
+                {nm || `Chapter ${i + 1}`}
+              </span>
+              {s.syl?.byId[s.refs?.[i]] && (() => {
+                const ch = s.syl.byId[s.refs[i]];
+                return (
+                  <span style={{ display: "block", fontSize: 12, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
+                    Ch {ch.no} · {ch.questions} questions · ~{fmtMarks(ch.marksEst)} marks
+                  </span>
+                );
+              })()}
             </span>
             {!s.done[i] && (
-              <span style={{ fontSize: 12, color: diffMeta(s.diffs?.[i] ?? 2).color, fontWeight: 600 }}>
-                {diffMeta(s.diffs?.[i] ?? 2).label} · {(s.baseChapter * diffMult(s.diffs?.[i] ?? 2)).toFixed(1)}h
+              <span style={{ fontSize: 12, color: diffMeta(s.diffs?.[i] ?? 2).color, fontWeight: 600, flexShrink: 0 }}>
+                {diffMeta(s.diffs?.[i] ?? 2).label} · {(s.costs?.[i] ?? s.baseChapter * diffMult(s.diffs?.[i] ?? 2)).toFixed(1)}h
               </span>
             )}
           </Tap>
@@ -1561,6 +1658,16 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, flash, setOver
 }
 
 /* --------------------------- SUBJECT SHEET --------------------------- */
+/* What a subject stores. Everything else on an analysed subject is computed. */
+const SUBJECT_KEYS = [
+  "id", "name", "date", "createdAt", "chapters", "type", "confidence", "lastScore",
+  "pace", "logged", "names", "diff", "done", "syllabus", "refs",
+];
+const toStored = (o) => Object.fromEntries(SUBJECT_KEYS.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
+
+const fmtMarks = (m) => (Math.round(m * 2) / 2).toString();
+const newSubjectId = (name) => name.toLowerCase().replace(/\s+/g, "") + Date.now();
+
 function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
   const [f, setF] = useState(
     initial ?? {
@@ -1569,29 +1676,82 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
     }
   );
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const valid = f.name.trim().length > 0;
   const lbl = { fontSize: 13, color: C.dim, marginBottom: 8, display: "block" };
 
+  /* source: your own chapters, or a syllabus from the engine */
+  const [srcId, setSrcId] = useState(initial?.syllabus ?? null);
+  const syl = srcId ? getSyllabus(srcId) : null;
+  const [picked, setPicked] = useState(() => {
+    if (initial?.syllabus) return new Set((initial.refs ?? []).filter(Boolean));
+    return new Set();
+  });
+  const chooseSource = (id) => {
+    setSrcId(id);
+    if (!id) return;
+    const s = getSyllabus(id);
+    setPicked(new Set(s.chapters.map((c) => c.id)));   // start with everything; untick what's done
+    setF((p) => ({ ...p, name: p.name.trim() ? p.name : s.subject, type: "problem" }));
+  };
+  const toggle = (id) =>
+    setPicked((p) => { const n = new Set(p); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+
+  const factor = readinessFactor(f.confidence, f.lastScore);
+  const pm = paceMult(f.pace);
+  const chosen = syl ? syl.chapters.filter((c) => picked.has(c.id)) : [];
+  const chosenHours = chosen.reduce((t, c) => t + c.hours.total, 0) * factor.factor * pm;
+  const chosenMarks = chosen.reduce((t, c) => t + c.marksEst, 0);
+
+  const valid = f.name.trim().length > 0 && (!syl || chosen.length > 0);
+
+  const submitSyllabus = () => {
+    const prevRefs = initial?.refs ?? [];
+    const prevDiff = initial?.diffs ?? initial?.diff ?? [];
+    const rows = chosen.map((c) => {
+      const j = prevRefs.indexOf(c.id);   // keep ticks and edits for chapters that stay
+      return j >= 0
+        ? { ref: c.id, name: initial.names?.[j] || c.name, diff: prevDiff[j] ?? c.diff, done: initial.done?.[j] ?? false }
+        : { ref: c.id, name: c.name, diff: c.diff, done: false };
+    });
+    // chapters you added by hand to a syllabus subject are kept as they are
+    (initial?.names ?? []).forEach((nm, j) => {
+      if (!prevRefs[j]) rows.push({ ref: null, name: nm, diff: prevDiff[j] ?? 2, done: initial.done?.[j] ?? false });
+    });
+    const base = mode === "edit"
+      ? { ...initial, ...f }
+      : { ...f, id: newSubjectId(f.name), createdAt: key(new Date()), logged: 0 };
+    onSave(toStored({
+      ...base, type: "problem", syllabus: syl.id, chapters: rows.length,
+      refs: rows.map((r) => r.ref), names: rows.map((r) => r.name),
+      diff: rows.map((r) => r.diff), done: rows.map((r) => r.done),
+    }));
+  };
+
   const submit = () => {
+    if (syl) { submitSyllabus(); return; }
     const n = Math.max(1, f.chapters);
     if (mode === "edit") {
-      onSave({
+      onSave(toStored({
         ...initial, ...f, chapters: n,
         names: Array.from({ length: n }, (_, i) => initial.names?.[i] ?? ""),
         diff: Array.from({ length: n }, (_, i) => initial.diffs?.[i] ?? initial.diff?.[i] ?? 2),
         done: Array.from({ length: n }, (_, i) => initial.done?.[i] ?? false),
-      });
+      }));
     } else {
-      onSave({
+      onSave(toStored({
         ...f, chapters: n,
-        id: f.name.toLowerCase().replace(/\s+/g, "") + Date.now(),
+        id: newSubjectId(f.name),
         createdAt: key(new Date()), logged: 0,
         names: Array(n).fill(""),
         diff: Array(n).fill(2),
         done: Array(n).fill(false),
-      });
+      }));
     }
   };
+
+  const pill = (on) => ({
+    flex: 1, background: on ? C.amber : C.cardHi, color: on ? "#181203" : C.dim,
+    border: `1px solid ${on ? C.amber : C.line}`, borderRadius: 12, padding: "12px 4px", fontSize: 13, fontWeight: 650,
+  });
 
   return (
     <div
@@ -1608,31 +1768,99 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
           {mode === "edit" ? "Edit subject" : "Add a subject"}
         </h2>
 
+        {mode !== "edit" && (
+          <>
+            <label style={lbl}>Chapters from</label>
+            <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+              <Tap className="focus-ring" aria-pressed={!srcId} onClick={() => chooseSource(null)} style={pill(!srcId)}>
+                Your own
+              </Tap>
+              {SYLLABI.map((s) => (
+                <Tap key={s.id} className="focus-ring" aria-pressed={srcId === s.id} onClick={() => chooseSource(s.id)} style={pill(srcId === s.id)}>
+                  NCERT Class 12 Maths
+                </Tap>
+              ))}
+            </div>
+          </>
+        )}
+
         <label style={lbl}>Subject</label>
         <input style={{ ...inputStyle, marginBottom: 18 }} placeholder="Biology" value={f.name} onChange={(e) => set("name", e.target.value)} />
 
         <label style={lbl}>Exam date</label>
         <input type="date" style={{ ...inputStyle, marginBottom: 18 }} value={f.date} onChange={(e) => set("date", e.target.value)} />
 
-        <label style={lbl}>Total chapters</label>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
-          <Tap onClick={() => set("chapters", Math.max(1, f.chapters - 1))} style={roundBtn}>−</Tap>
-          <NumField
-            value={f.chapters} min={1} max={60}
-            onChange={(v) => set("chapters", Math.round(v))}
-            style={{ ...inputStyle, textAlign: "center", flex: 1 }}
-          />
-          <Tap onClick={() => set("chapters", f.chapters + 1)} style={roundBtn}>+</Tap>
-        </div>
+        {syl ? (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+              <span style={{ ...lbl, marginBottom: 0 }}>Chapters you still need to cover</span>
+              <Tap
+                className="focus-ring"
+                onClick={() => setPicked(chosen.length === syl.chapters.length ? new Set() : new Set(syl.chapters.map((c) => c.id)))}
+                style={{ background: "none", color: C.amber, fontSize: 13, fontWeight: 600, padding: "4px 2px", borderRadius: 6 }}
+              >
+                {chosen.length === syl.chapters.length ? "Clear all" : "Select all"}
+              </Tap>
+            </div>
+            {syl.chapters.map((c) => {
+              const on = picked.has(c.id);
+              const dm = diffMeta(c.diff);
+              return (
+                <Tap
+                  key={c.id}
+                  className="focus-ring"
+                  aria-pressed={on}
+                  aria-label={`Chapter ${c.no}, ${c.name}. ${dm.label}, ${c.questions} questions, about ${fmtMarks(c.marksEst)} marks`}
+                  onClick={() => toggle(c.id)}
+                  style={{ width: "100%", textAlign: "left", background: C.card, border: `1px solid ${on ? "rgba(242,169,59,.55)" : C.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 8, display: "flex", alignItems: "center", gap: 12, color: C.text }}
+                >
+                  <div aria-hidden="true" style={{ width: 22, height: 22, borderRadius: 7, border: `1.5px solid ${on ? C.amber : C.line}`, background: on ? C.amber : "transparent", color: "#181203", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "all .2s ease" }}>
+                    {on ? "✓" : ""}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14.5, fontWeight: 600, color: on ? C.text : C.dim }}>{c.no}. {c.name}</div>
+                    <div style={{ fontSize: 12, color: C.dim, marginTop: 3, fontVariantNumeric: "tabular-nums" }}>
+                      {c.questions} questions · ~{fmtMarks(c.marksEst)} marks · {(c.hours.total * factor.factor * pm).toFixed(1)}h
+                    </div>
+                  </div>
+                  <span style={{ fontSize: 12, color: dm.color, fontWeight: 650, flexShrink: 0 }}>{dm.label}</span>
+                </Tap>
+              );
+            })}
+            <div style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "12px 14px", margin: "4px 0 10px", fontSize: 13.5, lineHeight: 1.5 }}>
+              <b style={{ fontWeight: 650 }}>{chosen.length}</b> chapter{chosen.length === 1 ? "" : "s"} · about{" "}
+              <b style={{ fontWeight: 650 }}>{fmtMarks(chosenMarks)}</b> of {syl.totalMarks} marks ·{" "}
+              <b style={{ fontWeight: 650, color: C.amber }}>{Math.round(chosenHours)}h</b> of work for you
+            </div>
+            <div style={{ fontSize: 12, color: C.dim, marginBottom: 18, lineHeight: 1.5 }}>
+              Questions are every numbered NCERT exercise question (2026-27 reprint). CBSE gives marks per
+              unit only, so chapter marks are an estimate. Difficulty combines how many questions a chapter
+              has with how hard its ideas are.
+            </div>
+          </>
+        ) : (
+          <>
+            <label style={lbl}>Total chapters</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+              <Tap onClick={() => set("chapters", Math.max(1, f.chapters - 1))} style={roundBtn}>−</Tap>
+              <NumField
+                value={f.chapters} min={1} max={60}
+                onChange={(v) => set("chapters", Math.round(v))}
+                style={{ ...inputStyle, textAlign: "center", flex: 1 }}
+              />
+              <Tap onClick={() => set("chapters", f.chapters + 1)} style={roundBtn}>+</Tap>
+            </div>
 
-        <label style={lbl}>How does this subject behave?</label>
-        <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
-          {Object.entries(TYPE_META).map(([k, v]) => (
-            <Tap key={k} onClick={() => set("type", k)} style={{ flex: 1, background: f.type === k ? C.amber : C.cardHi, color: f.type === k ? "#181203" : C.dim, border: `1px solid ${f.type === k ? C.amber : C.line}`, borderRadius: 12, padding: "12px 4px", fontSize: 13, fontWeight: 600 }}>
-              {v.label}
-            </Tap>
-          ))}
-        </div>
+            <label style={lbl}>How does this subject behave?</label>
+            <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+              {Object.entries(TYPE_META).map(([k, v]) => (
+                <Tap key={k} onClick={() => set("type", k)} style={{ flex: 1, background: f.type === k ? C.amber : C.cardHi, color: f.type === k ? "#181203" : C.dim, border: `1px solid ${f.type === k ? C.amber : C.line}`, borderRadius: 12, padding: "12px 4px", fontSize: 13, fontWeight: 600 }}>
+                  {v.label}
+                </Tap>
+              ))}
+            </div>
+          </>
+        )}
 
         <label style={lbl}>How fast do you get through a chapter here?</label>
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
@@ -1662,8 +1890,14 @@ function SubjectSheet({ mode, initial, defaultPace, onClose, onSave }) {
           onChange={(v) => set("lastScore", Math.round(v))}
           style={{ ...inputStyle, marginBottom: 8 }}
         />
-        <div style={{ fontSize: 12, color: C.dim, marginBottom: 24, lineHeight: 1.5 }}>
+        <div style={{ fontSize: 12, color: C.dim, marginBottom: 12, lineHeight: 1.5 }}>
           Used to catch the gap between how a subject feels and how it's actually going.
+        </div>
+        <div role="status" style={{ background: C.card, border: `1px solid ${factor.overconfident ? "#3A2E17" : C.line}`, borderRadius: 14, padding: "12px 14px", marginBottom: 24, fontSize: 13, lineHeight: 1.5, color: C.dim }}>
+          <span style={{ color: C.text, fontWeight: 650 }}>Hours multiplier ×{factor.factor.toFixed(2)}</span>
+          {factor.overconfident
+            ? <> — your score decides this on its own, because it disagrees with a confidence of {f.confidence}/5.</>
+            : <> — confidence counts 40%, your last score 60%. Lower either and the hours go up.</>}
         </div>
 
         <div style={{ display: "flex", gap: 10 }}>
