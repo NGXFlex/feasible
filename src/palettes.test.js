@@ -4,7 +4,10 @@ import { readFileSync } from "node:fs";
 import { PALETTES, SEMANTIC, DEFAULT_PALETTE, tokens, contrast, paletteCss, paletteById } from "./palettes.js";
 
 test("palettes: palettes.css is up to date with palettes.js (npm run palettes)", () => {
-  assert.equal(readFileSync(new URL("./palettes.css", import.meta.url), "utf8"), paletteCss());
+  // line endings aside (git may check the file out with CRLF on Windows)
+  assert.equal(readFileSync(new URL("./palettes.css", import.meta.url), "utf8").replace(/
+/g, "
+"), paletteCss());
 });
 
 test("palettes: five palettes, each with a light and a dark set", () => {
