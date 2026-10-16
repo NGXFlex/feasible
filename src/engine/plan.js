@@ -2,6 +2,11 @@ import { getSyllabus, readinessFactor, dailyNeed } from "./syllabusEngine.js";
 import { marksFromWeights } from "./portions.js";
 import { shareDays } from "./schedule.js";
 import { loggedTotal, loggedOn } from "./log.js";
+import { roundHours, coverage } from "./format.js";
+
+/* The one place logged hours come off: work (before logging) − logged,
+   never below zero. Every "hours left" figure is this. */
+export const hoursLeft = (work, logged) => Math.max(0, (Number(work) || 0) - (Number(logged) || 0));
 
 /* ------------------------------------------------------------------ */
 /*  The whole plan, from saved subjects and study time to everything    */
@@ -127,7 +132,8 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
     const syl = s.syllabus ? getSyllabus(s.syllabus) : null;
     // no syllabus but a weightage per chapter: split a 100-mark paper by weight
     const chapterMarks = !syl && Array.isArray(s.weight) && chapters > 0 ? marksFromWeights(s.weight, chapters) : null;
-    let raw = 0;
+    // in tenths of an hour, so adding up the rounded chapters never drifts
+    let rawTenths = 0, doneTenths = 0;
     let marks = 0, marksLeft = 0;
     const costs = [];
     const outstanding = [];
@@ -136,21 +142,28 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
       const ch = syl?.byId[s.refs?.[i]];
       // a syllabus chapter starts from its own estimate (questions, examples,
       // concept); re-marking its difficulty scales it from there
-      const cost = ch
+      // the readiness multiplier and pace apply here, once per chapter, and
+      // the chapter is rounded to the precision it's shown at
+      const cost = roundHours(ch
         ? ch.hours.total * (diffMult(d) / diffMult(ch.diff)) * factor.factor * pm
-        : baseChapter * diffMult(d);
+        : baseChapter * diffMult(d));
       costs[i] = cost;
       const m = ch ? ch.marksEst : chapterMarks?.[i];
       if (m != null) { marks += m; if (!done[i]) marksLeft += m; }
-      if (done[i]) continue;
-      raw += cost;
+      if (done[i]) { doneTenths += Math.round(cost * 10); continue; }
+      rawTenths += Math.round(cost * 10);
       outstanding.push({ i, d, cost, name: names[i] || `Chapter ${i + 1}` });
     }
+    const raw = rawTenths / 10;          // the unfinished chapters, before logged hours
     const logged = loggedTotal(s);
+    const need = hoursLeft(raw, logged);
+    // how much of the subject's work is covered: ticked chapters, then logged hours
+    const work = (rawTenths + doneTenths) / 10;
+    const cover = coverage(work - need, work);
     return {
       s: { ...s, chapters, done, names, logged }, meta, diffs, doneCount, remaining, baseChapter, raw, factor, costs, syl, pm, chapterMarks,
       marks: syl || chapterMarks ? marks : null, marksLeft: syl || chapterMarks ? marksLeft : null,
-      need: Math.max(0, raw - logged), outstanding,
+      need, outstanding, work, cover,
     };
   });
 
@@ -191,6 +204,7 @@ export function analysePlan(subjects, { wd, we, ov = {}, pace = "steady" }, toda
       remaining: b.remaining, baseChapter: b.baseChapter,
       perChapter: b.remaining ? b.raw / b.remaining : b.baseChapter,
       raw: b.raw, needed: b.need, allocated, available, days, recovered, spareShare,
+      work: b.work, coveredPct: b.cover.pct, covered: b.cover.done, coverLabel: b.cover.label,
       windowHours: hoursBetween(today, b.s.date, wd, we, ov),
       windowStart, windowEnd, windowDays: studyDays, phases, priority,
       // a phase with no days only matters while there's work left

@@ -13,11 +13,11 @@ import { SYLLABI, getSyllabus, readinessFactor, dailyNeed, planForTarget, exerci
 import { parsePortions, WEIGHTS, DEFAULT_WEIGHT } from "./engine/portions.js";
 import {
   TYPE_META, PACE, paceMult, DIFF_MULT, diffMult, toDate, addDays, key, daysUntil,
-  defaultHours, hoursBetween, analysePlan, todayPlan, upcomingDays, rankByUrgency, urgencyOf,
+  defaultHours, hoursBetween, analysePlan, todayPlan, upcomingDays, hoursLeft, rankByUrgency, urgencyOf,
   verdictOf, riskOrder, shortfallAction,
 } from "./engine/plan.js";
 import { migrateLog, setLoggedTotal, addLog } from "./engine/log.js";
-import { fmtH } from "./engine/format.js";
+import { fmtH, pctOf } from "./engine/format.js";
 import { rowsFromSubject, resizeRows, removeRow, applyRows } from "./engine/chapters.js";
 
 
@@ -1378,7 +1378,7 @@ function Subjects({ data, passed, passedActions, onOpen, onAdd, onImport, onSamp
       <CardGrid>
         {data.map((s, i) => {
           const isShort = s.gap < -0.5;
-          const chPct = s.chapters ? (s.doneCount / s.chapters) * 100 : 0;
+          const chPct = s.chapters ? pctOf(s.doneCount, s.chapters) : 0;
           const needs = s.perDay != null && s.needed > 0;
           return (
             <Tap
@@ -1469,7 +1469,7 @@ function Skeleton() {
 function Ring({ pct, size = 76, stroke = 7, color = C.accent, children }) {
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
-  const p = Math.max(0, Math.min(100, pct || 0));
+  const p = pctOf(pct, 100);
   return (
     <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true" style={{ display: "block", transform: "rotate(-90deg)" }}>
@@ -1491,7 +1491,7 @@ const tileLabel = { fontSize: 12.5, fontWeight: 550, color: C.dim, lineHeight: 1
 const bigNum = (size) => ({ fontFamily: DISPLAY, fontSize: size, fontWeight: 650, letterSpacing: "-0.04em", lineHeight: 1, fontVariantNumeric: "tabular-nums" });
 const miniBar = (pct, color = C.accent) => (
   <div style={{ height: 5, borderRadius: 99, background: C.raised, overflow: "hidden" }}>
-    <div style={{ width: `${Math.max(0, Math.min(100, pct))}%`, height: "100%", borderRadius: 99, background: color, transition: `width .8s ${EASE}` }} />
+    <div style={{ width: `${pctOf(pct, 100)}%`, height: "100%", borderRadius: 99, background: color, transition: `width .8s ${EASE}` }} />
   </div>
 );
 
@@ -1508,7 +1508,7 @@ function Today({ day, upcoming, data, passed, session, onStart, onResume, onOpen
   const byId = Object.fromEntries(data.map((x) => [x.id, x]));
   const soonest = data.reduce((a, b) => (!a || toDate(b.date) < toDate(a.date) ? b : a), null);
   const soonDays = soonest ? daysUntil(soonest.date) : null;
-  const donePct = day.progress * 100;
+  const donePct = pctOf(day.planned - day.left, day.planned);
   const isShort = shortH > 0.5;
 
   const line = { fontSize: 15, fontWeight: 500, marginTop: 10, lineHeight: 1.45 };
@@ -1595,7 +1595,7 @@ function Today({ day, upcoming, data, passed, session, onStart, onResume, onOpen
             {/* each subject today, in order of priority */}
             {listed.map((r, i) => {
               const s = byId[r.id];
-              const chPct = s?.chapters ? (s.doneCount / s.chapters) * 100 : 0;
+              const chPct = s?.chapters ? pctOf(s.doneCount, s.chapters) : 0;
               const finished = r.left <= 1e-6;
               return (
                 <Tap
@@ -1658,7 +1658,7 @@ function Today({ day, upcoming, data, passed, session, onStart, onResume, onOpen
               <span aria-hidden="true" style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 44, flexShrink: 0 }}>
                 {riskOrder(data).slice(0, 5).map((x) => {
                   const m = Math.max(...data.map((y) => Math.abs(y.gap)), 1);
-                  return <span key={x.id} title={x.name} style={{ width: 8, borderRadius: 4, height: `${Math.max(14, (Math.abs(x.gap) / m) * 100)}%`, background: x.gap < -0.5 ? C.shortfall : C.fits, opacity: 0.85 }} />;
+                  return <span key={x.id} title={x.name} style={{ width: 8, borderRadius: 4, height: `${Math.max(14, pctOf(Math.abs(x.gap), m))}%`, background: x.gap < -0.5 ? C.shortfall : C.fits, opacity: 0.85 }} />;
                 })}
               </span>
               <span aria-hidden="true" style={{ color: C.dim, fontSize: 20, flexShrink: 0 }}>›</span>
@@ -1721,7 +1721,7 @@ function NextDays({ days, desktop, onOpen }) {
                       <span style={{ flexShrink: 0, color: C.dim, fontVariantNumeric: "tabular-nums" }}>{fmtH(r.h)}</span>
                     </span>
                     <span aria-hidden="true" style={{ display: "block", height: 5, marginTop: 5, borderRadius: 99, background: C.raised }}>
-                      <span style={{ display: "block", height: "100%", width: `${(r.h / max) * 100}%`, borderRadius: 99, background: C.accent, opacity: 0.8 }} />
+                      <span style={{ display: "block", height: "100%", width: `${pctOf(r.h, max)}%`, borderRadius: 99, background: C.accent, opacity: 0.8 }} />
                     </span>
                   </Tap>
                 ))}
@@ -1882,7 +1882,7 @@ function Reality({ data, passed, passedActions, totalShort, totalSpare, today, o
           </div>
           {ranked.map((s) => {
             const m = Math.max(...ranked.map((x) => Math.abs(x.gap)), 1);
-            const w = (Math.abs(s.gap) / m) * 50;
+            const w = pctOf(Math.abs(s.gap), m) / 2;
             const sh = s.gap < -0.5;
             return (
               <Tap key={s.id} className="focus-ring" onClick={() => onOpen(s.id)} aria-label={`${s.name}: ${sh ? `${fmtH(-s.gap)} short` : `${fmtH(Math.max(0, s.gap))} spare`}`}
@@ -1920,8 +1920,8 @@ function Reality({ data, passed, passedActions, totalShort, totalSpare, today, o
                   {s.gap >= 0 ? "+" : "−"}{fmtH(Math.abs(s.gap))}
                 </span>
               </div>
-              <Bar label="Hours you'll have before this exam" hours={s.available} pct={go ? (s.available / max) * 100 : 0} color={C.lineHi} delay={0.1 * i} />
-              <Bar label="Hours this subject needs" hours={s.needed} pct={go ? (s.needed / max) * 100 : 0} color={v.kind === "short" ? C.shortfall : C.fits} delay={0.1 * i + 0.08} />
+              <Bar label="Hours you'll have before this exam" hours={s.available} pct={go ? pctOf(s.available, max) : 0} color={C.lineHi} delay={0.1 * i} />
+              <Bar label="Hours this subject needs" hours={s.needed} pct={go ? pctOf(s.needed, max) : 0} color={v.kind === "short" ? C.shortfall : C.fits} delay={0.1 * i + 0.08} />
               <div data-verdict={v.kind} style={{ fontSize: 16, fontWeight: 650, lineHeight: 1.4, color: col, marginTop: 4 }}>
                 {verdictText(s, v)}
               </div>
@@ -1952,7 +1952,7 @@ function Bar({ label, hours, pct, color, delay }) {
         <span style={{ fontVariantNumeric: "tabular-nums", color: C.text }}>{fmtH(hours)}</span>
       </div>
       <div style={{ height: 8, background: C.raised, borderRadius: 99, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: `width 1s cubic-bezier(.32,.72,0,1) ${delay}s` }} />
+        <div style={{ height: "100%", width: `${pctOf(pct, 100)}%`, background: color, borderRadius: 99, transition: `width 1s cubic-bezier(.32,.72,0,1) ${delay}s` }} />
       </div>
     </div>
   );
@@ -2132,7 +2132,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
       </div>
     );
   }
-  const pct = s.chapters ? (s.doneCount / s.chapters) * 100 : 0;
+  const pct = s.chapters ? pctOf(s.doneCount, s.chapters) : 0;
   const maxCost = Math.max(0, ...(s.costs ?? []).filter((c, j) => !s.done?.[j] && Number.isFinite(c)));
 
   /* Fastest way to the target score. Chapters left off this subject when it
@@ -2170,7 +2170,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
         note: "Chapter marks are a 100-mark paper split by the weightage you set, so treat this as a guide.",
       };
   const leftOut = s.syl ? s.syl.chapters.filter((c) => !(s.refs ?? []).includes(c.id)).length : 0;
-  const planPerDay = plan ? dailyNeed(plan.hours - (s.logged ?? 0), s.studyDays) : null;
+  const planPerDay = plan ? dailyNeed(hoursLeft(plan.hours, s.logged), s.studyDays) : null;
   const orderCh = orderFor != null ? s.syl?.byId[s.refs?.[orderFor]] : null;
 
   const resize = (n) => setRows((r) => resizeRows(r, n));
@@ -2195,9 +2195,9 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
         </div>
         {miniBar(pct)}
         {[
-          ["Hours left", fmtH(s.needed)],
-          ["An average chapter", `~${fmtH(s.perChapter)}`],
-          ...(s.logged > 0 ? [["Logged so far", fmtH(s.logged)]] : []),
+          ["Chapters left, before logged hours", fmtH(s.raw)],
+          ...(s.logged > 0 ? [["− Hours you've logged", `−${fmtH(s.logged)}`]] : []),
+          ["Hours left, after logged hours", s.covered ? "Done" : fmtH(s.needed)],
         ].map(([k, v]) => (
           <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, padding: "11px 0 0", marginTop: 11, borderTop: `1px solid ${C.line}`, fontSize: 14 }}>
             <span style={{ color: C.dim }}>{k}</span>
@@ -2205,8 +2205,9 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
           </div>
         ))}
         <div style={{ fontSize: 12.5, color: C.dim, marginTop: 12, lineHeight: 1.5 }}>
-          At your pace, an average remaining chapter here is worth about {fmtH(s.perChapter)} — hard ones cost more, easy ones less.
-          {s.logged > 0 && ` You've also logged ${fmtH(s.logged)} here.`}
+          {s.covered
+            ? (s.remaining === 0 ? "Every chapter is ticked done." : `The ${fmtH(s.logged)} you've logged covers every chapter left, so there's nothing left to do here.`)
+            : <>The chapter hours in the list add up to {fmtH(s.raw)}{s.logged > 0 ? <>; your {fmtH(s.logged)} logged comes off that once, leaving {fmtH(s.needed)}</> : ""}. An average remaining chapter is about {fmtH(s.perChapter)} — hard ones cost more, easy ones less.</>}
         </div>
       </div>
 
@@ -2242,8 +2243,10 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
                 to finish what's left by {fmtDate(s.date)}
               </div>
             </div>
-            <Ring pct={s.needed > 0 ? (s.available / s.needed) * 100 : 100} size={82} stroke={7} color={s.available >= s.needed ? C.fits : C.accent}>
-              <span style={{ display: "block" }}>{Math.min(999, Math.round(s.needed > 0 ? (s.available / s.needed) * 100 : 100))}%<span style={{ display: "block", fontFamily: FONT, fontSize: 9.5, fontWeight: 550, color: C.dim, letterSpacing: 0, marginTop: 2 }}>covered</span></span>
+            <Ring pct={s.coveredPct} size={82} stroke={7} color={s.covered ? C.fits : C.accent}>
+              {s.covered
+                ? <span style={{ display: "block", fontSize: 15 }}>Done</span>
+                : <span style={{ display: "block" }}>{s.coverLabel}<span style={{ display: "block", fontFamily: FONT, fontSize: 9.5, fontWeight: 550, color: C.dim, letterSpacing: 0, marginTop: 2 }}>covered</span></span>}
             </Ring>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, marginTop: 16, fontSize: 14 }}>
@@ -2251,7 +2254,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
             <span style={{ fontWeight: 650, fontVariantNumeric: "tabular-nums" }}>{fmtH(s.havePerDay)}</span>
           </div>
           <div style={{ fontSize: 13, color: C.dim, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.line}`, lineHeight: 1.55 }}>
-            {fmtH(s.needed)} left over {s.studyDays} study day{s.studyDays === 1 ? "" : "s"}.{" "}
+            {fmtH(s.needed)} left after logged hours, over {s.studyDays} study day{s.studyDays === 1 ? "" : "s"}. The ring is how much of this subject's work your ticked chapters and logged hours already cover.{" "}
             <span style={{ color: C.text, fontWeight: 600 }}>Hours multiplier ×{s.factor.factor.toFixed(2)}</span>
             {s.factor.overconfident
               ? <> — your {s.lastScore}% score decides it on its own (×{s.factor.fromScore.toFixed(2)}), because it disagrees with a confidence of {s.confidence}/5.</>
@@ -2394,7 +2397,7 @@ function Detail({ s, onBack, onToggle, onRemove, onPatch, onEdit, onStudy, study
                   )}
                   {!s.done[i] && maxCost > 0 && (
                     <span aria-hidden="true" style={{ display: "block", height: 4, marginTop: 8, borderRadius: 99, background: C.raised, overflow: "hidden" }}>
-                      <span style={{ display: "block", height: "100%", borderRadius: 99, width: `${Math.max(3, ((s.costs?.[i] ?? 0) / maxCost) * 100)}%`, background: diffMeta(s.diffs?.[i] ?? 2).v === 3 ? C.accent : C.lineHi }} />
+                      <span style={{ display: "block", height: "100%", borderRadius: 99, width: `${Math.max(3, pctOf(s.costs?.[i] ?? 0, maxCost))}%`, background: diffMeta(s.diffs?.[i] ?? 2).v === 3 ? C.accent : C.lineHi }} />
                     </span>
                   )}
                   {wm != null && (
@@ -2510,12 +2513,13 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
   const goal = (total * target) / 100;
   const saved = plan.skipped.reduce((t, id) => t + hoursOf(id), 0);
   const skippedMarks = plan.skipped.reduce((t, id) => t + marksOf(id), 0);
-  const accuracy = Math.round(plan.secureRate * 100);
-  // hours already logged on this subject come off, as they do in the per-day figure
+  const accuracy = Math.round(pctOf(plan.secureRate, 1));
+  // logged hours come off once, in hoursLeft (plan.js), the same way as the
+  // subject's own "hours left": both figures here are after logged hours
   const logged = s.logged ?? 0;
-  const hoursLeft = Math.max(0, plan.hours - logged);
-  const hoursAll = Math.max(0, plan.hours + saved - logged);
-  const expectPct = Math.round((plan.expectedMarks / total) * 100);
+  const leftForTarget = hoursLeft(plan.hours, logged);
+  const leftForAll = s.needed;
+  const expectPct = Math.round(pctOf(plan.expectedMarks, total));
 
   return (
     <div className="rise card" style={{ background: C.card, border: `1px solid ${C.line}`, borderRadius: 18, padding: 20, marginBottom: 16, animationDelay: ".15s" }}>
@@ -2539,10 +2543,9 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
         <>
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
             <div style={{ flex: 1, background: C.cardHi, borderRadius: 14, padding: "12px 14px" }}>
-              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: C.accentText, fontVariantNumeric: "tabular-nums" }}>{fmtH(hoursLeft)}</div>
+              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: -0.8, color: C.accentText, fontVariantNumeric: "tabular-nums" }}>{fmtH(leftForTarget)}</div>
               <div style={{ fontSize: 12, color: C.dim, marginTop: 4 }}>
-                {plan.skipped.length ? `instead of ${fmtH(hoursAll)}` : "every chapter left"}
-                {logged > 0 && `, after ${fmtH(logged)} already logged`}
+                {plan.skipped.length ? `left for ${target}%, instead of ${fmtH(leftForAll)} for every chapter` : "left, every chapter"}
               </div>
             </div>
             <div style={{ flex: 1, background: C.cardHi, borderRadius: 14, padding: "12px 14px" }}>
@@ -2553,6 +2556,11 @@ function PlanCard({ s, plan, src, target, perDay, leftOut, onTarget }) {
             </div>
           </div>
 
+          {logged > 0 && (
+            <div style={{ fontSize: 12.5, color: C.dim, marginTop: 10, lineHeight: 1.5 }}>
+              Both figures are after the {fmtH(logged)} you've logged, taken off once.
+            </div>
+          )}
           <div style={{ fontSize: 12.5, color: C.dim, margin: "16px 0 4px" }}>Study in this order</div>
           <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
             {plan.order.map((id, k) => (
